@@ -1,4 +1,5 @@
 import json
+import time
 
 import requests
 
@@ -11,6 +12,8 @@ class LLMClient:
         provider="auto",
         extra_headers=None,
         timeout=120,
+        max_retries=2,
+        retry_backoff=2.0,
     ):
         self.api_url = api_url
         self.api_key = api_key
@@ -18,45 +21,71 @@ class LLMClient:
         self.provider = provider
         self.extra_headers = extra_headers or {}
         self.timeout = timeout
+        self.max_retries = max_retries
+        self.retry_backoff = retry_backoff
 
-    def generate(self, prompt):
+    def generate(self, prompt_or_messages):
         headers = {"Content-Type": "application/json", **self.extra_headers}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
-        payload = self._build_payload(prompt)
+        payload = self._build_payload(prompt_or_messages)
+        attempts = int(self.max_retries) + 1
+        last_exc = None
+        for attempt in range(attempts):
+            try:
+                response = requests.post(
+                    self.api_url,
+                    json=payload,
+                    headers=headers,
+                    timeout=self.timeout,
+                )
+                response.raise_for_status()
 
-        response = requests.post(
-            self.api_url,
-            json=payload,
-            headers=headers,
-            timeout=self.timeout,
-        )
-        response.raise_for_status()
+                payload = response.json()
+                text = self._extract_text(payload)
+                if not isinstance(text, str) or not text.strip():
+                    keys = sorted(payload.keys()) if isinstance(payload, dict) else [type(payload).__name__]
+                    raise RuntimeError(
+                        "Unable to parse text from LLM response. "
+                        f"provider={self._resolved_provider()} api_url={self.api_url} payload_keys={keys}"
+                    )
+                return text
+            except (requests.ReadTimeout, requests.ConnectTimeout) as exc:
+                last_exc = exc
+                if attempt < attempts - 1:
+                    time.sleep(self.retry_backoff * (attempt + 1))
+                    continue
+                raise RuntimeError(
+                    "LLM request timed out. Increase llm_timeout or use a faster/smaller local model. "
+                    f"api_url={self.api_url} timeout={self.timeout} attempts={attempts}"
+                ) from exc
+            except requests.RequestException as exc:
+                last_exc = exc
+                if attempt < attempts - 1:
+                    time.sleep(self.retry_backoff * (attempt + 1))
+                    continue
+                raise
 
-        payload = response.json()
-        text = self._extract_text(payload)
-        if not isinstance(text, str) or not text.strip():
-            keys = sorted(payload.keys()) if isinstance(payload, dict) else [type(payload).__name__]
-            raise RuntimeError(
-                "Unable to parse text from LLM response. "
-                f"provider={self._resolved_provider()} api_url={self.api_url} payload_keys={keys}"
-            )
-        return text
+        raise RuntimeError("LLM request failed after retries") from last_exc
 
-    def _build_payload(self, prompt):
+    def _build_payload(self, prompt_or_messages):
         mode = self._resolved_provider()
+        prompt = _flatten_prompt(prompt_or_messages)
+        messages = _coerce_messages(prompt_or_messages)
 
         if mode == "openai_responses":
+            input_value = messages if messages is not None else prompt
             return {
                 "model": self.model or "gpt-4.1-mini",
-                "input": prompt,
+                "input": input_value,
             }
 
         if mode == "openai_chat":
+            chat_messages = messages if messages is not None else [{"role": "user", "content": prompt}]
             return {
                 "model": self.model or "gpt-4.1-mini",
-                "messages": [{"role": "user", "content": prompt}],
+                "messages": chat_messages,
             }
 
         if mode == "ollama_generate":
@@ -90,7 +119,6 @@ class LLMClient:
         if not isinstance(payload, dict):
             return None
 
-        # OpenAI responses API
         if payload.get("output_text"):
             return payload["output_text"]
 
@@ -129,3 +157,24 @@ class LLMClient:
                 return None
 
         return None
+
+
+def _coerce_messages(prompt_or_messages):
+    if isinstance(prompt_or_messages, list):
+        return prompt_or_messages
+    return None
+
+
+def _flatten_prompt(prompt_or_messages):
+    if isinstance(prompt_or_messages, str):
+        return prompt_or_messages
+    if isinstance(prompt_or_messages, list):
+        parts = []
+        for msg in prompt_or_messages:
+            if isinstance(msg, dict):
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    parts.append(f"{role.upper()}: {content}")
+        return "\n\n".join(parts)
+    return str(prompt_or_messages)

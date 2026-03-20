@@ -19,8 +19,7 @@ posterior = llb.infer(
     api_url=OLLAMA_URL,
     api_key=None,
     api_model=OLLAMA_MODEL,
-    n_models=1,
-    llm_timeout=600,
+    n_models=8,
     mcmc_num_warmup=50,
     mcmc_num_samples=100,
 )

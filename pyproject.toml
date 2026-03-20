@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "large-language-bayes"
+version = "0.1.0"
+description = "Bayesian inference with LLM-generated NumPyro models"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24",
+  "requests>=2.31",
+  "jax>=0.4.25",
+  "jaxlib>=0.4.25",
+  "numpyro>=0.14.0"
+]
+
+[tool.setuptools]
+packages = ["llb"]

@@ -3,6 +3,7 @@ import math
 import jax
 import jax.numpy as jnp
 import numpy as np
+from numpyro.handlers import seed, trace
 from numpyro.infer import MCMC, NUTS
 from numpyro.infer.util import log_density
 
@@ -12,9 +13,20 @@ def run_inference(code, data, targets=None, num_warmup=500, num_samples=1000, rn
     exec(code, env)
 
     model = env["model"]
+
+    # Reject models with unobserved discrete latent variables; these can trigger
+    # automatic enumeration warnings and unstable behavior for generic NUTS usage.
+    discrete_sites = _find_unobserved_discrete_sites(model=model, data=data, rng_seed=rng_seed)
+    if discrete_sites:
+        names = ", ".join(discrete_sites[:8])
+        suffix = "" if len(discrete_sites) <= 8 else f", ... (+{len(discrete_sites) - 8} more)"
+        raise ValueError(
+            "Model has unobserved discrete latent site(s) not supported by this pipeline: "
+            f"{names}{suffix}. Use continuous latent variables or mark discrete structure explicitly."
+        )
     
     kernel = NUTS(model)
-    mcmc = MCMC(kernel, num_warmup=num_warmup, num_samples=num_samples)
+    mcmc = MCMC(kernel, num_warmup=num_warmup, num_samples=num_samples, progress_bar=False)
     mcmc.run(jax.random.PRNGKey(rng_seed), data=data)
 
     samples = mcmc.get_samples(group_by_chain=False)
@@ -101,3 +113,17 @@ def _logmeanexp(values):
     vals = np.asarray(values, dtype=np.float64)
     m = vals.max()
     return float(m + math.log(np.mean(np.exp(vals - m))))
+
+
+def _find_unobserved_discrete_sites(model, data, rng_seed):
+    model_trace = trace(seed(model, jax.random.PRNGKey(rng_seed))).get_trace(data=data)
+    names = []
+    for name, site in model_trace.items():
+        if site.get("type") != "sample":
+            continue
+        if site.get("is_observed", False):
+            continue
+        fn = site.get("fn")
+        if bool(getattr(fn, "has_enumerate_support", False)):
+            names.append(name)
+    return names

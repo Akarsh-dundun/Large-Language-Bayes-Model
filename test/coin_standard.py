@@ -1,8 +1,5 @@
-from pathlib import Path
 import os
-import sys
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import llb
 
 text = (
@@ -12,8 +9,8 @@ text = (
 data = {"num_flips": 20, "num_heads": 14}
 targets = ["bias"]
 
-API_KEY = 'user_open_ai_key'
-API_MODEL = "gpt-4.1-mini"
+API_KEY = os.environ.get("OPENAI_API_KEY")
+API_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
 
 posterior = llb.infer(
     text,
@@ -23,8 +20,8 @@ posterior = llb.infer(
     api_key=API_KEY,
     api_model=API_MODEL,
     n_models=8,
-    mcmc_num_warmup=500,
-    mcmc_num_samples=1000,
+    mcmc_num_warmup=50,
+    mcmc_num_samples=100,
 )
 
-print(f"posterior draws for bias: {len(posterior['bias'])}")
+print(f"posterior draws for bias: {len(posterior)}")

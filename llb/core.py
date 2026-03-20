@@ -13,16 +13,27 @@ def infer(
     api_key=None,
     api_model=None,
     n_models=8,
-    mcmc_num_warmup=500,
-    mcmc_num_samples=1000,
-    log_marginal_num_inner=10,
-    log_marginal_num_outer=200,
+    mcmc_num_warmup=200,
+    mcmc_num_samples=400,
     random_seed=None,
-    llm_timeout=120,
+    llm_timeout=300,
+    llm_max_retries=2,
+    llm_retry_backoff=2.0,
+    log_marginal_num_inner=5,
+    log_marginal_num_outer=80,
+    verbose=False,
+    auto_print_result=True,
 ):
     base_seed = int(random_seed) if random_seed is not None else int(np.random.SeedSequence().generate_state(1)[0])
 
-    llm = LLMClient(api_url=api_url, api_key=api_key, model=api_model, timeout=llm_timeout)
+    llm = LLMClient(
+        api_url=api_url,
+        api_key=api_key,
+        model=api_model,
+        timeout=llm_timeout,
+        max_retries=llm_max_retries,
+        retry_backoff=llm_retry_backoff,
+    )
     model_codes = generate_models(llm, text=text, data=data, targets=targets, n_models=n_models)
 
     valid = []
@@ -76,7 +87,7 @@ def infer(
             detail += f"; ... and {len(failed_models) - 3} more"
         raise RuntimeError(f"No valid model could be inferred. {detail}")
 
-    if failed_models:
+    if failed_models and verbose:
         print(f"Skipped {len(failed_models)} invalid model(s) during inference.")
 
     final_targets = list(targets) if targets is not None else sorted(auto_targets or [])
@@ -109,6 +120,7 @@ def infer(
         rng=np.random.default_rng(base_seed),
     )
 
+    
     _print_posterior_summary(posterior, final_targets)
     return posterior
 
@@ -117,10 +129,7 @@ def _print_posterior_summary(posterior, targets):
     for target in targets:
         values = posterior.get(target, [])
         arr = np.asarray(values, dtype=np.float64)
-        finite_mask = np.isfinite(arr)
         print(f"{target}: {arr[:10].tolist()}")
-        mean_value = float(arr[finite_mask].mean())
-        print(f"{target} mean: {mean_value}")
 
 
 def _softmax_from_logs(log_values):

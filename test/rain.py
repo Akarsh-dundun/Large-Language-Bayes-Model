@@ -1,7 +1,6 @@
-from pathlib import Path
-import sys
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import os
+
 import llb
 
 text = (
@@ -17,8 +16,8 @@ data = {
 
 targets = ["outcome_for_next_day"]
 
-API_KEY = 'user_open_ai_key'
-API_MODEL = "gpt-4.1-mini"
+API_KEY = os.environ.get("OPENAI_API_KEY")
+API_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
 
 posterior = llb.infer(
     text,
@@ -28,7 +27,6 @@ posterior = llb.infer(
     api_key=API_KEY,
     api_model=API_MODEL,
     n_models=16,
-    llm_timeout=600,
-    mcmc_num_warmup=500,
-    mcmc_num_samples=1000,
+    mcmc_num_warmup=50,
+    mcmc_num_samples=100,
 )
