@@ -26,8 +26,6 @@ posterior_samples = llb.infer(
 	api_key="YOUR_API_KEY",
 	api_model="gpt-4.1-mini",
 )
-
-print(posterior_samples["true"][:10])
 ```
 
 Expected output shape:
