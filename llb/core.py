@@ -36,50 +36,80 @@ def infer(
     )
     model_codes = generate_models(llm, text=text, data=data, targets=targets, n_models=n_models)
 
-    valid = []
-    failed_models = []
-    auto_targets = None
+    def _evaluate_candidates(codes, start_index):
+        valid_local = []
+        failed_local = []
+        auto_targets_local = None
 
-    for idx, code in enumerate(model_codes):
-        try:
-            infer_out = run_inference(
-                code=code,
+        for local_idx, code in enumerate(codes):
+            idx = start_index + local_idx
+            try:
+                infer_out = run_inference(
+                    code=code,
+                    data=data,
+                    targets=targets,
+                    num_warmup=mcmc_num_warmup,
+                    num_samples=mcmc_num_samples,
+                    rng_seed=base_seed + idx,
+                )
+                log_bound = estimate_log_marginal_iw(
+                    model=infer_out["model"],
+                    data=data,
+                    posterior_samples=infer_out["samples"],
+                    num_inner=log_marginal_num_inner,
+                    num_outer=log_marginal_num_outer,
+                    rng_seed=base_seed + 10_000 + idx,
+                )
+            except Exception as exc:
+                failed_local.append((idx, str(exc)))
+                continue
+
+            if targets is not None and infer_out["missing_targets"]:
+                failed_local.append(
+                    (idx, f"missing targets: {', '.join(infer_out['missing_targets'])}")
+                )
+                continue
+
+            valid_local.append(
+                {
+                    "code": code,
+                    "target_samples": infer_out["target_samples"],
+                    "available_sites": infer_out["available_sites"],
+                    "log_marginal_bound": log_bound,
+                }
+            )
+
+            if targets is None:
+                site_set = set(infer_out["target_samples"].keys())
+                auto_targets_local = site_set if auto_targets_local is None else (auto_targets_local & site_set)
+
+        return valid_local, failed_local, auto_targets_local
+
+    valid, failed_models, auto_targets = _evaluate_candidates(model_codes, start_index=0)
+
+    # Local/smaller models can produce invalid code frequently. If the first
+    # batch fails entirely, automatically try more candidates once.
+    if not valid:
+        extra_goal = max(0, 6 - int(n_models))
+        if extra_goal > 0:
+            extra_codes = generate_models(
+                llm,
+                text=text,
                 data=data,
                 targets=targets,
-                num_warmup=mcmc_num_warmup,
-                num_samples=mcmc_num_samples,
-                rng_seed=base_seed + idx,
+                n_models=extra_goal,
             )
-            log_bound = estimate_log_marginal_iw(
-                model=infer_out["model"],
-                data=data,
-                posterior_samples=infer_out["samples"],
-                num_inner=log_marginal_num_inner,
-                num_outer=log_marginal_num_outer,
-                rng_seed=base_seed + 10_000 + idx,
+            extra_valid, extra_failed, extra_auto_targets = _evaluate_candidates(
+                extra_codes,
+                start_index=len(model_codes),
             )
-        except Exception as exc:
-            failed_models.append((idx, str(exc)))
-            continue
-
-        if targets is not None and infer_out["missing_targets"]:
-            failed_models.append(
-                (idx, f"missing targets: {', '.join(infer_out['missing_targets'])}")
-            )
-            continue
-
-        valid.append(
-            {
-                "code": code,
-                "target_samples": infer_out["target_samples"],
-                "available_sites": infer_out["available_sites"],
-                "log_marginal_bound": log_bound,
-            }
-        )
-
-        if targets is None:
-            site_set = set(infer_out["target_samples"].keys())
-            auto_targets = site_set if auto_targets is None else (auto_targets & site_set)
+            valid.extend(extra_valid)
+            failed_models.extend(extra_failed)
+            if targets is None:
+                if auto_targets is None:
+                    auto_targets = extra_auto_targets
+                elif extra_auto_targets is not None:
+                    auto_targets = auto_targets & extra_auto_targets
 
     if not valid:
         detail = "; ".join(f"model {i}: {msg}" for i, msg in failed_models[:3])
