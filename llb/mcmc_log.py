@@ -27,7 +27,17 @@ def run_inference(code, data, targets=None, num_warmup=500, num_samples=1000, rn
     
     kernel = NUTS(model)
     mcmc = MCMC(kernel, num_warmup=num_warmup, num_samples=num_samples, progress_bar=False)
-    mcmc.run(jax.random.PRNGKey(rng_seed), data=data)
+    try:
+        mcmc.run(jax.random.PRNGKey(rng_seed), data=data)
+    except Exception as exc:
+        msg = str(exc)
+        if "TracerIntegerConversionError" in msg or "__index__() method was called on traced array" in msg:
+            raise ValueError(
+                "Generated model used a traced value where a Python int is required "
+                "(for example range(sampled_value) or list indexing with sampled/jnp values). "
+                "Use loop bounds from static data fields instead."
+            ) from exc
+        raise
 
     samples = mcmc.get_samples(group_by_chain=False)
     available = sorted(samples.keys())
