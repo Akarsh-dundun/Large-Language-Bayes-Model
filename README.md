@@ -6,33 +6,6 @@ Large-Language-Bayes-Model (LLB) is a package that performs Bayesian inference b
 - MCMC posterior inference, and
 - model-weighted posterior aggregation.
 
-This README documents the workflow, design choices, and practical usage.
-
-## End-to-End Workflow
-
-1. You provide `text`, `data`, and optional `targets`.
-2. LLB prompts an LLM with paper-style few-shot examples (chat template).
-3. The LLM generates candidate `def model(data):` NumPyro programs.
-4. Invalid candidates are filtered (for example duplicate site names or missing targets).
-5. Each valid model is run with MCMC.
-6. LLB estimates an approximate log marginal bound per model.
-7. Posterior draws are combined using model-weighted resampling.
-
-The returned object is a dictionary mapping each target name to posterior draws.
-
-## Design Choices
-
-- Paper-style prompting:
-    examples are structured as `INPUT/OUTPUT` with `THOUGHT` + `MODEL` blocks.
-- Chat-template examples:
-    examples are sent as user/assistant turns (not embedded as one monolithic system prompt).
-- Robust generation:
-    regeneration is attempted when candidate code is malformed or has duplicate site names.
-- Default speed for demos:
-    `n_models=2` by default to keep runtime practical for local machines.
-- Weighted model averaging:
-    model posteriors are aggregated by normalized weights from log marginal bounds.
-
 ## Installation
 
 ```bash
