@@ -44,5 +44,4 @@ posterior = llb.infer(
     mcmc_num_warmup=50,
     mcmc_num_samples=100,
 )
-)
 ```
