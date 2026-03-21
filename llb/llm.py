@@ -92,6 +92,9 @@ class LLMClient:
             payload = {
                 "prompt": prompt,
                 "stream": False,
+                # Some reasoning-capable local models may return empty `response`
+                # when thinking is enabled; request direct final output when supported.
+                "think": False,
             }
             if self.model:
                 payload["model"] = self.model
@@ -146,6 +149,12 @@ class LLMClient:
 
         if payload.get("response"):
             return payload["response"]
+        if payload.get("thinking"):
+            return payload["thinking"]
+        if "message" in payload and isinstance(payload["message"], dict):
+            content = payload["message"].get("content")
+            if isinstance(content, str) and content:
+                return content
         if payload.get("text"):
             return payload["text"]
 
