@@ -10,7 +10,13 @@ from numpyro.infer.util import log_density
 
 def run_inference(code, data, targets=None, num_warmup=500, num_samples=1000, rng_seed=0):
     env = {}
-    exec(code, env)
+    try:
+        exec(code, env)
+    except Exception as exc:
+        raise ValueError(f"compile_error: {exc}") from exc
+
+    if "model" not in env or not callable(env["model"]):
+        raise ValueError("compile_error: generated code does not define callable model(data)")
 
     model = env["model"]
 
@@ -21,7 +27,7 @@ def run_inference(code, data, targets=None, num_warmup=500, num_samples=1000, rn
         names = ", ".join(discrete_sites[:8])
         suffix = "" if len(discrete_sites) <= 8 else f", ... (+{len(discrete_sites) - 8} more)"
         raise ValueError(
-            "Model has unobserved discrete latent site(s) not supported by this pipeline: "
+            "inference_error: Model has unobserved discrete latent site(s) not supported by this pipeline: "
             f"{names}{suffix}. Use continuous latent variables or mark discrete structure explicitly."
         )
     
@@ -33,11 +39,11 @@ def run_inference(code, data, targets=None, num_warmup=500, num_samples=1000, rn
         msg = str(exc)
         if "TracerIntegerConversionError" in msg or "__index__() method was called on traced array" in msg:
             raise ValueError(
-                "Generated model used a traced value where a Python int is required "
+                "inference_error: Generated model used a traced value where a Python int is required "
                 "(for example range(sampled_value) or list indexing with sampled/jnp values). "
                 "Use loop bounds from static data fields instead."
             ) from exc
-        raise
+        raise ValueError(f"inference_error: {exc}") from exc
 
     samples = mcmc.get_samples(group_by_chain=False)
     available = sorted(samples.keys())

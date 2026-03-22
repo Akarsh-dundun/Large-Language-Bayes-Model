@@ -1,6 +1,4 @@
 
-import os
-
 import llb
 
 text = (
@@ -16,14 +14,17 @@ data = {
 
 targets = ["outcome_for_next_day"]
 
-API_KEY = os.environ.get("OPENAI_API_KEY")
-API_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4.1-mini")
+API_KEY = "paste_your_api_key_here"
+API_MODEL = "gpt-4.1-mini"
+
+if API_KEY == "paste_your_api_key_here" or not API_KEY.strip():
+    raise ValueError("Set API_KEY to a valid OpenAI key before running this script.")
 
 posterior = llb.infer(
     text,
     data,
     targets,
-    api_url="https://api.openai.com/v1/responses",
+    api_url="https://api.openai.com/v1/chat/completions",
     api_key=API_KEY,
     api_model=API_MODEL,
     n_models=16,

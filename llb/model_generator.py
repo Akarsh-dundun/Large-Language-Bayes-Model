@@ -122,9 +122,23 @@ def _add_imports_if_needed(code):
 
 
 def generate_models(llm, text, data, targets, n_models):
+    models, _diag = generate_models_with_diagnostics(
+        llm=llm,
+        text=text,
+        data=data,
+        targets=targets,
+        n_models=n_models,
+    )
+    return models
+
+
+def generate_models_with_diagnostics(llm, text, data, targets, n_models):
     models = []
+    failures = []
+    syntax_parsing_failures = 0
+    request_failures = 0
     max_attempts_per_model = 4
-    for _ in range(n_models):
+    for slot_idx in range(n_models):
         last_reason = None
         code = None
         for _attempt in range(max_attempts_per_model):
@@ -140,10 +154,21 @@ def generate_models(llm, text, data, targets, n_models):
                     }
                 )
 
-            candidate = extract_model_code(llm.generate(messages))
+            try:
+                raw = llm.generate(messages)
+            except Exception as exc:
+                last_reason = f"generation_request_error: {exc}"
+                continue
+
+            try:
+                candidate = extract_model_code(raw)
+            except Exception as exc:
+                last_reason = f"parsing_error: {exc}"
+                continue
+
             duplicate_names = _duplicate_site_names(candidate)
             if duplicate_names:
-                last_reason = f"duplicate site names: {', '.join(duplicate_names)}"
+                last_reason = f"parsing_error: duplicate site names: {', '.join(duplicate_names)}"
                 continue
 
             code = candidate
@@ -151,8 +176,23 @@ def generate_models(llm, text, data, targets, n_models):
 
         if code is not None:
             models.append(code)
+        else:
+            reason = last_reason or "generation_request_error: unknown"
+            failures.append((slot_idx, reason))
+            if reason.startswith("parsing_error:"):
+                syntax_parsing_failures += 1
+            else:
+                request_failures += 1
 
-    return models
+    diagnostics = {
+        "requested_models": int(n_models),
+        "generated_models": int(len(models)),
+        "generation_failures": failures,
+        "invalid_generation_count": int(len(failures)),
+        "invalid_syntax_parsing_count": int(syntax_parsing_failures),
+        "generation_request_failures": int(request_failures),
+    }
+    return models, diagnostics
 
 
 def _duplicate_site_names(code):
