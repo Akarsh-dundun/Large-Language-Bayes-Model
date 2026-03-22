@@ -231,11 +231,7 @@ def infer(
                 weights=weights,
                 target_name=target,
             )
-        _print_compact_model_averaging_summary(
-            per_model_target_samples=per_model_target_samples,
-            weights=weights,
-            targets=report_targets,
-        )
+        # Removed compact model averaging summary printout as requested
 
     draws_per_model = len(per_model_target_samples[0][final_targets[0]])
     total_draws = draws_per_model * len(per_model_target_samples)
@@ -392,30 +388,7 @@ def _print_array_preview(label, arr):
         print(f"{label} first_10: {flat[:10].tolist()}")
 
 
-def _print_compact_model_averaging_summary(per_model_target_samples, weights, targets):
-    for target in targets:
-        per_model_samples = [
-            np.asarray(model_samples[target], dtype=np.float64)
-            for model_samples in per_model_target_samples
-        ]
-        mu_stack = np.stack([
-            np.asarray(_target_mean(s), dtype=np.float64)
-            for s in per_model_samples
-        ], axis=0)
-        mu_flat = np.mean(mu_stack, axis=0)
-        mu_weighted = np.tensordot(np.asarray(weights, dtype=np.float64), mu_stack, axes=(0, 0))
-        diff = np.asarray(mu_weighted, dtype=np.float64) - np.asarray(mu_flat, dtype=np.float64)
-
-        print("--- Model Averaging (Compact) ---")
-        print(f"Target: {target}")
-        print(f"Number of models: {len(per_model_samples)}")
-        _print_mean_summary("flat", mu_flat)
-        _print_mean_summary("weighted", mu_weighted)
-        if np.asarray(diff).ndim == 0:
-            print(f"difference (weighted - flat): {float(diff):.6f}")
-        else:
-            _print_array_preview("difference (weighted - flat)", diff)
-        print()
+    # Removed _print_compact_model_averaging_summary as requested
 
 
 def _softmax_from_logs(log_values):
@@ -541,7 +514,6 @@ def _normalize_target_sample_map(target_samples, targets):
     first_dims = [arrays[target].shape[0] for target in targets]
     n_ref = int(max(first_dims))
 
-    # Try to repair simple transposition errors: (event_dim, n_samples) -> (n_samples, event_dim)
     for target in targets:
         arr = arrays[target]
         if arr.shape[0] == n_ref:
