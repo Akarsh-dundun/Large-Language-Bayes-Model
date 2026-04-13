@@ -17,14 +17,14 @@ EXPERIMENTS = [
         "api_model": "qwen2.5-coder:latest",
     },
     {
-        "name": "deepseek-coder",  # CHANGE THIS TO YOUR SECOND MODEL
+        "name": "llama3.2",  # CHANGE THIS TO YOUR SECOND MODEL
         "api_url": "http://localhost:11434/api/generate",
         "api_key": None,
-        "api_model": "deepseek-coder:6.7b",  # CHANGE THIS
+        "api_model": "llama3.2:latest",  # CHANGE THIS
     },
 ]
 
-N_MODELS_LIST = [10, 20, 50, 100]
+N_MODELS_LIST = [10, 20]
 MCMC_WARMUP = 500
 MCMC_SAMPLES = 1000
 
@@ -70,6 +70,9 @@ def run_experiment(llm_config, n_models):
             verbose=True,
             mcmc_num_warmup=MCMC_WARMUP,
             mcmc_num_samples=MCMC_SAMPLES,
+            loo_num_warmup=50,          # Reduced for LOO
+            loo_num_samples=100,        # Reduced for LOO
+            use_true_loo=True, 
         )
         
         elapsed_time = time.time() - start_time
@@ -123,6 +126,9 @@ def run_experiment(llm_config, n_models):
             "posterior_mean_uniform": float(np.mean(result["posterior_flat"]["true_bias"])),
             "posterior_mean_bma": float(np.mean(result["posterior_bma"]["true_bias"])),
             "posterior_mean_loo": float(np.mean(result["posterior_loo"]["true_bias"])),
+
+            "final_loo_objective": float(result["final_loo_objective"]),
+            "log_marginal_per_model": result["log_marginal_per_model"],
         }
         
         print(f"\n✓ Completed in {elapsed_time:.1f}s")
@@ -135,6 +141,7 @@ def run_experiment(llm_config, n_models):
             "success": True,
             "metrics": metrics,
             "full_result": serialize_result(result),
+            "model_codes": result.get("model_codes", []),
         }
         
     except Exception as e:
@@ -168,6 +175,12 @@ for llm_config in EXPERIMENTS:
         with open(output_file, "w") as f:
             json.dump(result, f, indent=2)
         print(f"  Saved to: {output_file}")
+
+        models_gen = result['model_codes']
+        output_model_file = results_dir / f"models_{llm_config['name']}_n{n_models}.json"
+        with open(output_model_file, "w") as f:
+            json.dump(result, f, indent=2)
+        print(f"  Saved to: {output_model_file}")
 
 # Save combined results
 combined_file = results_dir / "all_results.json"

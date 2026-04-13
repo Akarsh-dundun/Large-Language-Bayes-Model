@@ -9,7 +9,7 @@ with open(results_dir / "all_results.json") as f:
     all_results = json.load(f)
 
 # Extract successful results into DataFrame
-data = []
+# data = []
 for r in all_results:
     if r["success"]:
         m = r["metrics"]

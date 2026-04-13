@@ -163,6 +163,9 @@ def infer(
     log_marginal_num_inner=5,
     log_marginal_num_outer=80,
     loo_num_inner=25,
+    loo_num_warmup=50,      # NEW
+    loo_num_samples=100,    # NEW
+    use_true_loo=True,      # NEW FLAG
     verbose=False,
     auto_print_result=True,
 ):
@@ -186,6 +189,7 @@ def infer(
         n_models=n_models,
     )
     generated_models = len(model_codes)
+    all_generated_codes = model_codes.copy()
     model_codes, deduplicated_models = _dedupe_model_codes(model_codes)
 
     diagnostics = {
@@ -243,22 +247,33 @@ def infer(
                         console.print(f"[yellow]Model {idx}: Marginal likelihood failed ({e})[/yellow]")
                     model_info["log_marginal_bound"] = -1e12
 
-                # Always compute LOO
+                # Always compute LOO with diagnostics
                 try:
-                    loo_log_liks = estimate_loo_log_likelihoods(
+                    loo_result = estimate_loo_log_likelihoods(
                         model=infer_out["model"],
                         data=data,
                         posterior_samples=infer_out["samples"],
                         num_inner=loo_num_inner,
+                        num_warmup=loo_num_warmup,
+                        num_samples=loo_num_samples,
                         rng_seed=base_seed + 20_000 + idx,
+                        use_true_loo=use_true_loo,
+                        return_diagnostics=True,  # Get diagnostics
                     )
-                    model_info["loo_log_liks"] = loo_log_liks
+                    
+                    if isinstance(loo_result, dict):
+                        model_info["loo_log_liks"] = loo_result['loo_log_liks']
+                        model_info["loo_diagnostics"] = loo_result['diagnostics']
+                    else:
+                        model_info["loo_log_liks"] = loo_result
+                        model_info["loo_diagnostics"] = None
+                        
                 except Exception as loo_exc:
                     if verbose:
                         console.print(f"[yellow]Model {idx}: LOO failed ({loo_exc})[/yellow]")
-                    # Fallback: use marginal likelihood as proxy
                     n_data = _get_num_datapoints(data)
-                    model_info["loo_log_liks"] = np.full(n_data, log_bound / n_data, dtype=np.float64)
+                    model_info["loo_log_liks"] = np.full(n_data, -1e12, dtype=np.float64)
+                    model_info["loo_diagnostics"] = {'method': 'failed', 'error': str(loo_exc)}
 
             except Exception as exc:
                 msg = str(exc)
@@ -414,6 +429,19 @@ def infer(
         weights_loo_full = np.ones(len(valid)) / len(valid)
     
     # ========================================
+    # Compute final LOO objective value
+    # ========================================
+    final_loo_objective = 0.0
+    if loo_matrix.shape[1] > 0:
+        for i in range(loo_matrix.shape[0]):
+            max_val = np.max(loo_matrix[i, :])
+            log_sum_i = max_val + np.log(
+                np.sum(weights_loo_full[valid_models_mask] * np.exp(loo_matrix[i, :] - max_val))
+            )
+            final_loo_objective += log_sum_i
+        final_loo_objective /= loo_matrix.shape[0]
+    
+    # ========================================
     # COMPARISON TABLE
     # ========================================
     console.rule("[bold cyan]Weight Comparison: BMA vs LOO Stacking[/bold cyan]", style="cyan")
@@ -461,6 +489,7 @@ def infer(
     console.print(f"  BMA max weight: [yellow]{weights_bma_full.max():.6f}[/yellow]")
     console.print(f"  LOO max weight: [green]{weights_loo_full.max():.6f}[/green]")
     console.print(f"  L1 distance: [magenta]{np.sum(np.abs(weights_loo_full - weights_bma_full)):.6f}[/magenta]")
+    console.print(f"  Final LOO objective: [green]{final_loo_objective:.4f}[/green]")
     console.rule(style="cyan")
     
     # ========================================
@@ -643,8 +672,11 @@ def infer(
         "weights_loo": weights_loo,
         "weights_uniform": flat_weights,
         "diagnostics": diagnostics,
+        "final_loo_objective": float(final_loo_objective),
+        "log_marginal_per_model": log_bounds.tolist(),
+        "loo_diagnostics_per_model": [v.get("loo_diagnostics") for v in valid],
+        "model_codes": all_generated_codes,
     }
-
 
 def _print_dual_model_averaging_summary(samples, weights_bma, weights_loo, target_name):
     """Print comparison of BMA vs LOO weights."""
