@@ -39,7 +39,7 @@ def estimate_loo_log_likelihoods(
     
     Returns:
         If return_diagnostics=False: np.array of LOO log likelihoods
-        If return_diagnostics=True: dict with 'loo_log_liks' and 'diagnostics'
+        If return_diagnostics=True: dict with 'loo_elbos' and 'diagnostics'
     """
     if use_true_loo:
         result = _estimate_loo_true(
@@ -56,7 +56,7 @@ def estimate_loo_log_likelihoods(
     if return_diagnostics:
         return result
     else:
-        return result['loo_log_liks'] if isinstance(result, dict) else result
+        return result['loo_elbos'] if isinstance(result, dict) else result
 
 
 def _estimate_loo_true(
@@ -64,35 +64,24 @@ def _estimate_loo_true(
     num_inner, num_warmup, num_samples,
     rng_seed, min_std, fallback_log_bound
 ):
-    """
-    True LOO-ELBO implementation (Algorithm 2).
-    Returns dict with loo_log_liks and diagnostics.
-    """
     n_datapoints = _get_num_datapoints(data)
-    loo_log_liks = []
-    elbo_histories = []  # Track ELBO convergence for each datapoint
-    
+    loo_elbos = []
+    elbo_histories = []
+
     print(f"Computing TRUE LOO-ELBO for {n_datapoints} datapoints (this will take a while)...")
-    
+
     for i in range(n_datapoints):
         print(f"  LOO for datapoint {i+1}/{n_datapoints}...", end=" ")
-        
+
         try:
-            # Step 1: Create LOO dataset
             loo_data = _create_loo_dataset(data, i)
-            
-            # Step 2: Run MCMC on LOO data
+
+            # Fit q(z) using posterior samples from the LOO refit
             kernel = NUTS(model)
-            mcmc = MCMC(
-                kernel,
-                num_warmup=num_warmup,
-                num_samples=num_samples,
-                progress_bar=False
-            )
+            mcmc = MCMC(kernel, num_warmup=num_warmup, num_samples=num_samples, progress_bar=False)
             mcmc.run(jax.random.PRNGKey(rng_seed + i), data=loo_data)
             loo_posterior_samples = mcmc.get_samples(group_by_chain=False)
-            
-            # Step 3: Fit proposal q(z)
+
             means = {}
             stds = {}
             for name, values in loo_posterior_samples.items():
@@ -100,21 +89,30 @@ def _estimate_loo_true(
                 mean, std = _finite_mean_std_axis0(arr, min_std=min_std)
                 means[name] = mean
                 stds[name] = std
-            
-            # Step 4: Compute ELBO with tracking
+
+            # Estimate log p(x_{-i} | m) once, then subtract it from the joint ELBO
+            loo_log_evidence = estimate_log_marginal_iw(
+                model=model,
+                data=loo_data,
+                posterior_samples=loo_posterior_samples,
+                num_inner=num_inner,
+                num_outer=num_samples,
+                rng_seed=rng_seed + 5000 + i,
+                min_std=min_std,
+                fallback_log_bound=fallback_log_bound,
+            )
+
             rng = np.random.default_rng(rng_seed + 1000 + i)
             elbo_estimates = []
-            
-            for iter_idx in range(num_inner):
+
+            for _ in range(num_inner):
                 z = {}
                 log_q = 0.0
-                
-                # Sample z ~ q(z)
+
                 for name in loo_posterior_samples:
                     sample = rng.normal(loc=means[name], scale=stds[name])
                     z[name] = jnp.asarray(sample)
-                    
-                    # Compute log q(z)
+
                     centered = (sample - means[name]) / stds[name]
                     log_q += float(
                         -0.5 * np.sum(
@@ -123,57 +121,53 @@ def _estimate_loo_true(
                             + 2.0 * np.log(stds[name])
                         )
                     )
-                
+
                 try:
-                    # log p(x_i | z)
-                    log_lik_i = _compute_pointwise_log_likelihood(model, data, z, i)
-                    
-                    # log p(z | x_{-i})
-                    log_prior_loo, _ = log_density(model, (), {"data": loo_data}, z)
-                    
-                    # ELBO = log p(x_i, z | x_{-i}) - log q(z)
-                    log_p_joint = log_lik_i + float(log_prior_loo)
-                    elbo_term = log_p_joint - log_q
-                    
+                    # Full joint log density: log p(x_i, x_{-i}, z)
+                    log_joint_full, _ = log_density(model, (), {"data": data}, z)
+
+                    # Predictive ELBO estimate:
+                    # E_q[ log p(x_i, x_{-i}, z) - log q(z) ] - log p(x_{-i})
+                    elbo_term = float(log_joint_full) - log_q - float(loo_log_evidence)
+
                     if np.isfinite(elbo_term):
                         elbo_estimates.append(elbo_term)
-                        
+
                 except Exception:
                     continue
-            
-            # Step 5: Average ELBO
+
             if len(elbo_estimates) > 0:
                 elbo_i = np.mean(elbo_estimates)
-                loo_log_liks.append(elbo_i)
+                loo_elbos.append(elbo_i)
                 elbo_histories.append(elbo_estimates)
                 print(f"ELBO = {elbo_i:.4f} (±{np.std(elbo_estimates):.4f})")
             else:
-                loo_log_liks.append(fallback_log_bound)
+                loo_elbos.append(fallback_log_bound)
                 elbo_histories.append([])
-                print(f"FAILED (using fallback)")
-                
+                print("FAILED (using fallback)")
+
         except Exception as e:
             print(f"ERROR: {e}")
-            loo_log_liks.append(fallback_log_bound)
+            loo_elbos.append(fallback_log_bound)
             elbo_histories.append([])
-    
+
     return {
-        'loo_log_liks': np.array(loo_log_liks, dtype=np.float64),
-        'diagnostics': {
-            'method': 'true_loo_elbo',
-            'elbo_histories': elbo_histories,
-            'n_datapoints': n_datapoints,
-            'num_inner': num_inner,
-            'num_warmup': num_warmup,
-            'num_samples': num_samples,
-        }
+        "loo_elbos": np.array(loo_elbos, dtype=np.float64),
+        "diagnostics": {
+            "method": "true_loo_elbo",
+            "elbo_histories": elbo_histories,
+            "n_datapoints": n_datapoints,
+            "num_inner": num_inner,
+            "num_warmup": num_warmup,
+            "num_samples": num_samples,
+        },
     }
 
 
 def _estimate_loo_psis(model, data, posterior_samples, rng_seed, fallback_log_bound):
     """
     PSIS-LOO approximation using arviz.
-    Returns dict with loo_log_liks and diagnostics.
+    Returns dict with loo_elbos and diagnostics.
     """
     if not ARVIZ_AVAILABLE:
         raise ImportError(
@@ -213,7 +207,7 @@ def _estimate_loo_psis(model, data, posterior_samples, rng_seed, fallback_log_bo
     # Compute PSIS-LOO
     try:
         loo_result = az.loo(log_likelihood, pointwise=True)
-        loo_log_liks = loo_result.loo_i.values
+        loo_elbos = loo_result.loo_i.values
         
         pareto_k = loo_result.pareto_k.values if hasattr(loo_result, 'pareto_k') else None
         warning = loo_result.warning if hasattr(loo_result, 'warning') else False
@@ -226,7 +220,7 @@ def _estimate_loo_psis(model, data, posterior_samples, rng_seed, fallback_log_bo
                 print(f"  ⚠️  {n_bad}/{n_datapoints} points have k > 0.7 (unreliable)")
         
         return {
-            'loo_log_liks': np.array(loo_log_liks, dtype=np.float64),
+            'loo_elbos': np.array(loo_elbos, dtype=np.float64),
             'diagnostics': {
                 'method': 'psis_loo',
                 'pareto_k': pareto_k,
@@ -239,7 +233,7 @@ def _estimate_loo_psis(model, data, posterior_samples, rng_seed, fallback_log_bo
     except Exception as e:
         print(f"PSIS-LOO failed: {e}, using fallback")
         return {
-            'loo_log_liks': np.full(n_datapoints, fallback_log_bound, dtype=np.float64),
+            'loo_elbos': np.full(n_datapoints, fallback_log_bound, dtype=np.float64),
             'diagnostics': {
                 'method': 'psis_loo_failed',
                 'error': str(e),
