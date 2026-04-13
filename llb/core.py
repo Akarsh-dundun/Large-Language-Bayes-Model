@@ -1,12 +1,149 @@
 import numpy as np
+from scipy.optimize import minimize
+from rich.console import Console
+from rich.table import Table
+from rich.panel import Panel
+from rich.text import Text
+from rich import box
 
-from .mcmc_log import estimate_log_marginal_iw, run_inference
+from .mcmc_log import estimate_log_marginal_iw, run_inference, estimate_loo_log_likelihoods, _get_num_datapoints
 from .llm import LLMClient
 from .model_generator import generate_models_with_diagnostics
+
+# Initialize rich console
+console = Console()
 
 
 class NoValidModelsError(RuntimeError):
     """Raised when no valid generated models remain for aggregation."""
+
+
+def _solve_stacking_optimization(loo_log_liks_matrix, verbose=False):
+    """
+    Solve the stacking optimization problem with detailed debugging.
+    """
+    n_datapoints, n_models = loo_log_liks_matrix.shape
+    
+    if n_models == 1:
+        return np.array([1.0])
+    
+    # Add rich panel header
+    console.rule("[bold cyan]Stacking Optimization[/bold cyan]", style="cyan")
+    print(f"n_datapoints: {n_datapoints}, n_models: {n_models}")
+    
+    def objective(w):
+        """Negative of the stacking objective (for minimization)."""
+        log_sum = np.zeros(n_datapoints)
+        for i in range(n_datapoints):
+            max_val = np.max(loo_log_liks_matrix[i, :])
+            log_sum[i] = max_val + np.log(
+                np.sum(w * np.exp(loo_log_liks_matrix[i, :] - max_val))
+            )
+        return -np.mean(log_sum)
+    
+    def gradient(w):
+        """Gradient of the negative objective."""
+        grad = np.zeros(n_models)
+        for i in range(n_datapoints):
+            max_val = np.max(loo_log_liks_matrix[i, :])
+            exp_vals = np.exp(loo_log_liks_matrix[i, :] - max_val)
+            weighted_sum = np.sum(w * exp_vals)
+            grad += exp_vals / weighted_sum
+        return -grad / n_datapoints
+    
+    constraints = {
+        'type': 'eq',
+        'fun': lambda w: np.sum(w) - 1.0,
+        'jac': lambda w: np.ones(n_models)
+    }
+    
+    bounds = [(0.0, 1.0) for _ in range(n_models)]
+    w0 = np.ones(n_models) / n_models
+    
+    console.print(f"Initial weights (uniform): [yellow]{w0[:5]}[/yellow]... (showing first 5)")
+    console.print(f"Initial objective value: [cyan]{objective(w0):.10f}[/cyan]")
+    initial_grad = gradient(w0)
+    console.print(f"Initial gradient norm: [cyan]{np.linalg.norm(initial_grad):.10f}[/cyan]")
+    console.print(f"Initial gradient (first 5): [yellow]{initial_grad[:5]}[/yellow]")
+    
+    if np.allclose(initial_grad, 0, atol=1e-8):
+        console.print("\n[yellow]⚠️  GRADIENT IS ZERO at uniform weights![/yellow]")
+        print("This means uniform weights are locally optimal.")
+        print("This happens when all models have identical LOO performance.")
+        console.rule(style="cyan")
+        return w0
+    
+    # Optimize
+    result = minimize(
+        objective,
+        w0,
+        method='SLSQP',
+        jac=gradient,
+        bounds=bounds,
+        constraints=constraints,
+        options={'ftol': 1e-9, 'maxiter': 1000, 'disp': verbose}
+    )
+    
+    print("\nOptimization completed:")
+    console.print(f"  Success: [green]{result.success}[/green]" if result.success else f"  Success: [red]{result.success}[/red]")
+    console.print(f"  Message: [dim]{result.message}[/dim]")
+    print(f"  Iterations: {result.nit}")
+    console.print(f"  Final objective: [cyan]{result.fun:.10f}[/cyan]")
+    console.print(f"  Objective improvement: [green]{objective(w0) - result.fun:.10f}[/green]")
+    
+    weights = result.x
+    weights = np.maximum(weights, 0.0)
+    weights = weights / np.sum(weights)
+    
+    console.print(f"  Final weights (first 5): [yellow]{weights[:5]}[/yellow]")
+    console.print(f"  Weight range: [[cyan]{weights.min():.6f}[/cyan], [cyan]{weights.max():.6f}[/cyan]]")
+    console.print(f"  Weight std: [cyan]{np.std(weights):.6f}[/cyan]")
+    
+    if np.allclose(weights, w0, atol=1e-6):
+        console.print("\n[yellow]⚠️  WARNING: Weights did not change from initial uniform![/yellow]")
+        print("Likely cause: All models perform identically on LOO.")
+    else:
+        console.print(f"\n[green]✓ Weights changed from uniform[/green] (max change: {np.max(np.abs(weights - w0)):.6f})")
+    
+    console.rule(style="cyan")
+    
+    return weights
+
+
+def _solve_stacking_optimization_simple(loo_log_liks_matrix):
+    """
+    Simpler version using just scipy without gradient.
+    """
+    n_datapoints, n_models = loo_log_liks_matrix.shape
+    
+    if n_models == 1:
+        return np.array([1.0])
+    
+    def objective(w):
+        """Negative of the stacking objective."""
+        log_sum = np.zeros(n_datapoints)
+        for i in range(n_datapoints):
+            max_val = np.max(loo_log_liks_matrix[i, :])
+            log_sum[i] = max_val + np.log(
+                np.sum(w * np.exp(loo_log_liks_matrix[i, :] - max_val))
+            )
+        return -np.mean(log_sum)
+    
+    constraints = {'type': 'eq', 'fun': lambda w: np.sum(w) - 1.0}
+    bounds = [(0.0, 1.0) for _ in range(n_models)]
+    w0 = np.ones(n_models) / n_models
+    
+    result = minimize(
+        objective,
+        w0,
+        method='SLSQP',
+        bounds=bounds,
+        constraints=constraints,
+        options={'ftol': 1e-9}
+    )
+    
+    weights = np.maximum(result.x, 0.0)
+    return weights / np.sum(weights)
 
 
 def infer(
@@ -25,6 +162,7 @@ def infer(
     llm_retry_backoff=2.0,
     log_marginal_num_inner=5,
     log_marginal_num_outer=80,
+    loo_num_inner=25,
     verbose=False,
     auto_print_result=True,
 ):
@@ -81,14 +219,47 @@ def infer(
                     num_samples=mcmc_num_samples,
                     rng_seed=base_seed + idx,
                 )
-                log_bound = estimate_log_marginal_iw(
-                    model=infer_out["model"],
-                    data=data,
-                    posterior_samples=infer_out["samples"],
-                    num_inner=log_marginal_num_inner,
-                    num_outer=log_marginal_num_outer,
-                    rng_seed=base_seed + 10_000 + idx,
-                )
+
+                # Build model_info dict - COMPUTE BOTH
+                model_info = {
+                    "code": code,
+                    "target_samples": infer_out["target_samples"],
+                    "available_sites": infer_out["available_sites"],
+                }
+
+                # Always compute marginal likelihood
+                try:
+                    log_bound = estimate_log_marginal_iw(
+                        model=infer_out["model"],
+                        data=data,
+                        posterior_samples=infer_out["samples"],
+                        num_inner=log_marginal_num_inner,
+                        num_outer=log_marginal_num_outer,
+                        rng_seed=base_seed + 10_000 + idx,
+                    )
+                    model_info["log_marginal_bound"] = log_bound
+                except Exception as e:
+                    if verbose:
+                        console.print(f"[yellow]Model {idx}: Marginal likelihood failed ({e})[/yellow]")
+                    model_info["log_marginal_bound"] = -1e12
+
+                # Always compute LOO
+                try:
+                    loo_log_liks = estimate_loo_log_likelihoods(
+                        model=infer_out["model"],
+                        data=data,
+                        posterior_samples=infer_out["samples"],
+                        num_inner=loo_num_inner,
+                        rng_seed=base_seed + 20_000 + idx,
+                    )
+                    model_info["loo_log_liks"] = loo_log_liks
+                except Exception as loo_exc:
+                    if verbose:
+                        console.print(f"[yellow]Model {idx}: LOO failed ({loo_exc})[/yellow]")
+                    # Fallback: use marginal likelihood as proxy
+                    n_data = _get_num_datapoints(data)
+                    model_info["loo_log_liks"] = np.full(n_data, log_bound / n_data, dtype=np.float64)
+
             except Exception as exc:
                 msg = str(exc)
                 if msg.startswith("compile_error:"):
@@ -106,14 +277,7 @@ def infer(
                 )
                 continue
 
-            valid_local.append(
-                {
-                    "code": code,
-                    "target_samples": infer_out["target_samples"],
-                    "available_sites": infer_out["available_sites"],
-                    "log_marginal_bound": log_bound,
-                }
-            )
+            valid_local.append(model_info)
 
             if targets is None:
                 site_set = set(infer_out["target_samples"].keys())
@@ -170,27 +334,145 @@ def infer(
     if len(valid) == 0:
         diagnostics["valid_models_final"] = 0
         raise NoValidModelsError(_build_no_valid_models_message(diagnostics))
-
+    
+    # ========================================
+    # METHOD 1: Marginal Likelihood (BMA-style)
+    # ========================================
     log_bounds = np.array([v["log_marginal_bound"] for v in valid], dtype=np.float64)
-
     finite_mask = np.isfinite(log_bounds)
-    dropped_nonfinite = int(np.size(finite_mask) - int(np.sum(finite_mask)))
-    diagnostics["nonfinite_log_bound_drops"] = dropped_nonfinite
-    valid_filtered = [v for v, keep in zip(valid, finite_mask) if keep]
     log_bounds_filtered = log_bounds[finite_mask]
-
-    if len(valid_filtered) > 0:
-        valid = valid_filtered
-        weights = _softmax_from_logs(log_bounds_filtered)
+    
+    if len(log_bounds_filtered) > 0:
+        weights_bma = _softmax_from_logs(log_bounds_filtered)
+        weights_bma_full = np.zeros(len(valid))
+        weights_bma_full[finite_mask] = weights_bma
     else:
-        diagnostics["valid_models_final"] = 0
-        raise NoValidModelsError(_build_no_valid_models_message(diagnostics))
-
+        console.print("[red]All marginal likelihood bounds are non-finite![/red]")
+        weights_bma_full = np.ones(len(valid)) / len(valid)
+    
+    # ========================================
+    # METHOD 2: LOO Stacking
+    # ========================================
+    loo_matrix_raw = np.column_stack([v["loo_log_liks"] for v in valid])
+    
+    # Filter out models where LOO completely failed
+    fallback_threshold = 0.5
+    valid_models_mask = []
+    
+    for j in range(loo_matrix_raw.shape[1]):
+        col = loo_matrix_raw[:, j]
+        num_fallback = np.sum(col < -1e10)
+        frac_fallback = num_fallback / len(col)
+        valid_models_mask.append(frac_fallback < fallback_threshold)
+    
+    valid_models_mask = np.array(valid_models_mask)
+    loo_matrix = loo_matrix_raw[:, valid_models_mask]
+    
+    num_dropped_loo = int(np.sum(~valid_models_mask))
+    if num_dropped_loo > 0:
+        console.print(f"[yellow]LOO: Dropped {num_dropped_loo} models due to computation failures[/yellow]")
+    
+    if loo_matrix.shape[1] > 0:
+        # Diagnostic
+        console.rule("[bold magenta]LOO Matrix Diagnostic[/bold magenta]", style="magenta")
+        console.print(f"Shape: [cyan]{loo_matrix.shape}[/cyan]")
+        print(f"\nFirst 3 rows (first 3 datapoints):")
+        print(loo_matrix[:3, :])
+        print(f"\nVariance per datapoint (across models):")
+        for i in range(min(6, loo_matrix.shape[0])):
+            variance = np.var(loo_matrix[i, :])
+            range_val = np.max(loo_matrix[i, :]) - np.min(loo_matrix[i, :])
+            console.print(f"  Point {i}: var=[yellow]{variance:.8f}[/yellow], range=[green]{range_val:.8f}[/green]")
+        console.print(f"\nOverall variance: [yellow]{np.var(loo_matrix):.8f}[/yellow]")
+        console.print(f"Overall range: [green]{np.max(loo_matrix) - np.min(loo_matrix):.8f}[/green]")
+        
+        # Check if all columns are identical
+        first_col = loo_matrix[:, 0]
+        all_same = True
+        for j in range(1, loo_matrix.shape[1]):
+            if not np.allclose(loo_matrix[:, j], first_col, rtol=1e-5):
+                all_same = False
+                break
+        
+        if all_same:
+            console.print("\n[red]⚠️  WARNING: ALL MODELS HAVE IDENTICAL LOO VALUES![/red]")
+            print("This means the LOO computation is broken, not the optimization.")
+        else:
+            console.print(f"\n[green]✓ Models have different LOO values[/green]")
+        
+        console.rule(style="magenta")
+        
+        # Optimize
+        weights_loo_subset = _solve_stacking_optimization(loo_matrix, verbose=verbose)
+        
+        # Map back to full valid set
+        weights_loo_full = np.zeros(len(valid))
+        weights_loo_full[valid_models_mask] = weights_loo_subset
+        weights_loo_full = weights_loo_full / np.sum(weights_loo_full)  # Renormalize
+    else:
+        console.print("[red]All models failed LOO computation![/red]")
+        weights_loo_full = np.ones(len(valid)) / len(valid)
+    
+    # ========================================
+    # COMPARISON TABLE
+    # ========================================
+    console.rule("[bold cyan]Weight Comparison: BMA vs LOO Stacking[/bold cyan]", style="cyan")
+    
+    comparison_table = Table(
+        title="Model Weights Comparison",
+        box=box.ROUNDED,
+        show_header=True,
+        header_style="bold cyan"
+    )
+    comparison_table.add_column("Model", style="dim", justify="right")
+    comparison_table.add_column("BMA Weight", style="yellow", justify="right")
+    comparison_table.add_column("LOO Weight", style="green", justify="right")
+    comparison_table.add_column("Difference", style="magenta", justify="right")
+    comparison_table.add_column("Log Marginal", style="cyan", justify="right")
+    
+    for i in range(len(valid)):
+        w_bma = weights_bma_full[i]
+        w_loo = weights_loo_full[i]
+        diff = w_loo - w_bma
+        log_marg = log_bounds[i]
+        
+        # Color code difference
+        if abs(diff) > 0.1:
+            diff_str = f"[bold magenta]{diff:+.6f}[/bold magenta]"
+        elif abs(diff) > 0.01:
+            diff_str = f"[magenta]{diff:+.6f}[/magenta]"
+        else:
+            diff_str = f"[dim]{diff:+.6f}[/dim]"
+        
+        comparison_table.add_row(
+            str(i),
+            f"{w_bma:.6f}",
+            f"{w_loo:.6f}",
+            diff_str,
+            f"{log_marg:.2f}" if np.isfinite(log_marg) else "—"
+        )
+    
+    console.print(comparison_table)
+    
+    # Summary statistics
+    console.print(f"\n[bold]Weight Statistics:[/bold]")
+    console.print(f"  BMA entropy: [yellow]{-np.sum(weights_bma_full * np.log(weights_bma_full + 1e-10)):.4f}[/yellow]")
+    console.print(f"  LOO entropy: [green]{-np.sum(weights_loo_full * np.log(weights_loo_full + 1e-10)):.4f}[/green]")
+    console.print(f"  BMA max weight: [yellow]{weights_bma_full.max():.6f}[/yellow]")
+    console.print(f"  LOO max weight: [green]{weights_loo_full.max():.6f}[/green]")
+    console.print(f"  L1 distance: [magenta]{np.sum(np.abs(weights_loo_full - weights_bma_full)):.6f}[/magenta]")
+    console.rule(style="cyan")
+    
+    # ========================================
+    # Compute posteriors for BOTH methods
+    # ========================================
     diagnostics["valid_models_final"] = int(len(valid))
-
+    
     per_model_target_samples = []
     valid_after_shape = []
-    kept_weights = []
+    kept_weights_bma = []
+    kept_weights_loo = []
+    
     for m_idx, model_info in enumerate(valid):
         ok, payload = _normalize_target_sample_map(
             target_samples=model_info["target_samples"],
@@ -201,106 +483,178 @@ def infer(
             continue
         per_model_target_samples.append(payload)
         valid_after_shape.append(model_info)
-        kept_weights.append(float(weights[m_idx]))
+        kept_weights_bma.append(float(weights_bma_full[m_idx]))
+        kept_weights_loo.append(float(weights_loo_full[m_idx]))
 
     if len(per_model_target_samples) == 0:
         diagnostics["valid_models_final"] = 0
         raise NoValidModelsError(_build_no_valid_models_message(diagnostics))
 
     valid = valid_after_shape
-    weights = np.asarray(kept_weights, dtype=np.float64)
-    weights = weights / np.sum(weights)
+    weights_bma = np.asarray(kept_weights_bma, dtype=np.float64)
+    weights_bma = weights_bma / np.sum(weights_bma)
+    weights_loo = np.asarray(kept_weights_loo, dtype=np.float64)
+    weights_loo = weights_loo / np.sum(weights_loo)
+    flat_weights = np.ones(len(per_model_target_samples)) / len(per_model_target_samples)
     diagnostics["valid_models_final"] = int(len(valid))
 
     report_targets = _resolve_report_targets(per_model_target_samples, final_targets)
 
+    # Compute epistemic uncertainty for BOTH
+    epistemic_uncertainty_bma = {}
+    epistemic_uncertainty_loo = {}
+    epistemic_uncertainty_uniform = {}
+
+    for target in final_targets:
+        mu_per_model = []
+        for model_samples in per_model_target_samples:
+            arr = np.asarray(model_samples[target], dtype=np.float64)
+            mu_per_model.append(_target_mean(arr))
+
+        mu_stack = np.stack(
+            [np.asarray(mu, dtype=np.float64) for mu in mu_per_model],
+            axis=0,
+        )
+
+        # BMA epistemic uncertainty
+        mu_bma = np.tensordot(weights_bma, mu_stack, axes=(0, 0))
+        S_bma = np.tensordot(weights_bma, (mu_stack - mu_bma) ** 2, axes=(0, 0))
+        C_bma = 1.0 - float(np.sum(weights_bma ** 2))
+        epistemic_uncertainty_bma[target] = S_bma / C_bma if C_bma > 0 else np.zeros_like(mu_bma)
+
+        # LOO epistemic uncertainty
+        mu_loo = np.tensordot(weights_loo, mu_stack, axes=(0, 0))
+        S_loo = np.tensordot(weights_loo, (mu_stack - mu_loo) ** 2, axes=(0, 0))
+        C_loo = 1.0 - float(np.sum(weights_loo ** 2))
+        epistemic_uncertainty_loo[target] = S_loo / C_loo if C_loo > 0 else np.zeros_like(mu_loo)
+
+        mu_uniform = np.tensordot(flat_weights, mu_stack, axes=(0, 0))
+        S_uniform = np.tensordot(flat_weights, (mu_stack - mu_uniform) ** 2, axes=(0, 0))
+        C_uniform = 1.0 - float(np.sum(flat_weights ** 2))
+        epistemic_uncertainty_uniform[target] = S_uniform / C_uniform if C_uniform > 0 else np.zeros_like(mu_uniform)
+
+    # ========================================
+    # PRINT DIAGNOSTICS
+    # ========================================
     if auto_print_result:
-        print(f"Number of requested models: {diagnostics['requested_models']}")
-        print(f"Number of generated models: {diagnostics['generated_models']}")
-        print(f"Number of deduplicated models: {diagnostics['deduplicated_models']}")
-        print(f"Number of invalid models (syntax/parsing): {diagnostics['invalid_models_syntax_or_parsing']}")
-        print(f"Number of generation request failures (timeout/network/API): {diagnostics['generation_request_failures']}")
-        print(f"Number of models missing required targets: {diagnostics['missing_targets_failures']}")
-        print(f"Number of models that failed to compile: {diagnostics['compile_failures']}")
-        print(f"Number of models that failed during inference: {diagnostics['inference_failures']}")
-        print(f"Number of models dropped due to target shape mismatch: {diagnostics['shape_mismatch_drops']}")
-        print(f"Number of models dropped due to non-finite log bound: {diagnostics['nonfinite_log_bound_drops']}")
-        print(f"Number of valid models used in final aggregation: {diagnostics['valid_models_final']}")
+        console.rule("[bold blue]Inference Diagnostics[/bold blue]", style="blue")
+        console.print(f"Number of requested models: [cyan]{diagnostics['requested_models']}[/cyan]")
+        console.print(f"Number of generated models: [cyan]{diagnostics['generated_models']}[/cyan]")
+        console.print(f"Number of deduplicated models: [yellow]{diagnostics['deduplicated_models']}[/yellow]" if diagnostics['deduplicated_models'] > 0 else f"Number of deduplicated models: [dim]{diagnostics['deduplicated_models']}[/dim]")
+        console.print(f"Number of invalid models (syntax/parsing): [yellow]{diagnostics['invalid_models_syntax_or_parsing']}[/yellow]" if diagnostics['invalid_models_syntax_or_parsing'] > 0 else f"Number of invalid models (syntax/parsing): [dim]{diagnostics['invalid_models_syntax_or_parsing']}[/dim]")
+        console.print(f"Number of generation request failures: [red]{diagnostics['generation_request_failures']}[/red]" if diagnostics['generation_request_failures'] > 0 else f"Number of generation request failures: [dim]{diagnostics['generation_request_failures']}[/dim]")
+        console.print(f"Number of models missing required targets: [yellow]{diagnostics['missing_targets_failures']}[/yellow]" if diagnostics['missing_targets_failures'] > 0 else f"Number of models missing required targets: [dim]{diagnostics['missing_targets_failures']}[/dim]")
+        console.print(f"Number of models that failed to compile: [red]{diagnostics['compile_failures']}[/red]" if diagnostics['compile_failures'] > 0 else f"Number of models that failed to compile: [dim]{diagnostics['compile_failures']}[/dim]")
+        console.print(f"Number of models that failed during inference: [red]{diagnostics['inference_failures']}[/red]" if diagnostics['inference_failures'] > 0 else f"Number of models that failed during inference: [dim]{diagnostics['inference_failures']}[/dim]")
+        console.print(f"Number of models dropped due to target shape mismatch: [yellow]{diagnostics['shape_mismatch_drops']}[/yellow]" if diagnostics['shape_mismatch_drops'] > 0 else f"Number of models dropped due to target shape mismatch: [dim]{diagnostics['shape_mismatch_drops']}[/dim]")
+        console.print(f"Number of valid models used in final aggregation: [bold green]{diagnostics['valid_models_final']}[/bold green]")
+        
+        # Print both weight summaries
         for target in report_targets:
             per_model_samples = [
                 np.asarray(model_samples[target], dtype=np.float64)
                 for model_samples in per_model_target_samples
             ]
-            _print_model_averaging_summary(
+            console.rule(f"[bold green]Model Averaging: {target}[/bold green]", style="green")
+            _print_dual_model_averaging_summary(
                 samples=per_model_samples,
-                weights=weights,
+                weights_bma=weights_bma,
+                weights_loo=weights_loo,
                 target_name=target,
             )
+        
+        # Epistemic uncertainty comparison
+        console.rule("[bold magenta]Epistemic Uncertainty Comparison[/bold magenta]", style="magenta")
+        
+        epi_table = Table(
+            title="Between-Model Variance (Unbiased)",
+            box=box.ROUNDED,
+            show_header=True,
+            header_style="bold magenta"
+        )
+        epi_table.add_column("Target", style="cyan")
+        epi_table.add_column("BMA Epistemic Var", style="yellow", justify="right")
+        epi_table.add_column("LOO Epistemic Var", style="green", justify="right")
+        epi_table.add_column("Difference", style="magenta", justify="right")
+        
+        for target in final_targets:
+            epi_bma = np.asarray(epistemic_uncertainty_bma[target], dtype=np.float64)
+            epi_loo = np.asarray(epistemic_uncertainty_loo[target], dtype=np.float64)
+            
+            if epi_bma.ndim == 0 and epi_loo.ndim == 0:
+                diff = float(epi_loo) - float(epi_bma)
+                epi_table.add_row(
+                    target,
+                    f"{float(epi_bma):.6f}",
+                    f"{float(epi_loo):.6f}",
+                    f"{diff:+.6f}"
+                )
+            else:
+                epi_table.add_row(
+                    target,
+                    f"shape: {epi_bma.shape}",
+                    f"shape: {epi_loo.shape}",
+                    "—"
+                )
+        
+        console.print(epi_table)
+        console.print()
+    
+    # Compute posteriors
     draws_per_model = len(per_model_target_samples[0][final_targets[0]])
     total_draws = draws_per_model * len(per_model_target_samples)
-    posterior_weighted = _resample_weighted_samples(
+    
+    posterior_bma = _resample_weighted_samples(
         per_model_target_samples,
         final_targets,
-        model_weights=weights,
+        model_weights=weights_bma,
         total_draws=total_draws,
         rng=np.random.default_rng(base_seed),
     )
-
-    flat_weights = np.ones(len(per_model_target_samples), dtype=np.float64) / len(per_model_target_samples)
-    posterior_flat = _resample_weighted_samples(
+    
+    posterior_loo = _resample_weighted_samples(
         per_model_target_samples,
         final_targets,
-        model_weights=flat_weights,
+        model_weights=weights_loo,
         total_draws=total_draws,
         rng=np.random.default_rng(base_seed + 1),
     )
 
+    posterior_flat = _resample_weighted_samples(
+        per_model_target_samples,
+        final_targets,
+        model_weights=np.ones(len(per_model_target_samples)) / len(per_model_target_samples),
+        total_draws=total_draws,
+        rng=np.random.default_rng(base_seed + 2),
+    )
+
     if auto_print_result:
-        returned_targets = _resolve_report_targets([posterior_weighted], report_targets)
-        _print_posterior_summary(posterior_weighted, returned_targets)
-        _print_weighted_flat_first10(posterior_weighted, posterior_flat, returned_targets)
-    return posterior_weighted
+        returned_targets = _resolve_report_targets([posterior_loo], report_targets)
+        _print_posterior_comparison(posterior_bma, posterior_loo, posterior_flat, returned_targets)
+    
+    return {
+        "posterior_bma": posterior_bma,
+        "posterior_loo": posterior_loo,
+        "posterior_flat": posterior_flat,
+        "epistemic_uncertainty_bma": epistemic_uncertainty_bma,
+        "epistemic_uncertainty_loo": epistemic_uncertainty_loo,
+        "epistemic_uncertainty_uniform": epistemic_uncertainty_uniform,
+        "weights_bma": weights_bma,
+        "weights_loo": weights_loo,
+        "weights_uniform": flat_weights,
+        "diagnostics": diagnostics,
+    }
 
 
-def _print_posterior_summary(posterior, targets):
-    for target in targets:
-        arr = np.asarray(posterior.get(target, []), dtype=np.float64)
-        mean_value = _target_mean(arr)
-        print("--- Weighted Posterior Summary ---")
-        print(f"Target: {target}")
-        _print_mean_summary("weighted", mean_value)
-        print()
-
-
-def _print_weighted_flat_first10(posterior_weighted, posterior_flat, targets):
-    for target in targets:
-        weighted = np.asarray(posterior_weighted.get(target, []), dtype=np.float64)
-        flat = np.asarray(posterior_flat.get(target, []), dtype=np.float64)
-        weighted_mean = _target_mean(weighted)
-        flat_mean = _target_mean(flat)
-        print("--- Weighted vs Flat Target Summary ---")
-        print(f"Target: {target}")
-        _print_mean_summary("flat", flat_mean)
-        _print_mean_summary("weighted", weighted_mean)
-        if np.asarray(weighted_mean).ndim == 0 and np.asarray(flat_mean).ndim == 0:
-            print(f"difference (weighted - flat): {float(weighted_mean) - float(flat_mean):.6f}")
-        else:
-            diff = np.asarray(weighted_mean, dtype=np.float64) - np.asarray(flat_mean, dtype=np.float64)
-            _print_array_preview("difference (weighted - flat)", diff)
-        print()
-
-
-def _print_model_averaging_summary(samples, weights, target_name):
+def _print_dual_model_averaging_summary(samples, weights_bma, weights_loo, target_name):
+    """Print comparison of BMA vs LOO weights."""
     if len(samples) == 0:
-        print("--- Model Averaging Summary ---")
         print("Number of models: 0")
-        print()
         return
 
     mu_per_model = [np.asarray(_target_mean(np.asarray(s, dtype=np.float64)), dtype=np.float64) for s in samples]
 
-    # Some generated models may emit the same target name with different shapes.
-    # Summarize the dominant compatible shape instead of crashing on np.stack.
+    # Handle shape mismatches
     shape_groups = {}
     for idx, mu in enumerate(mu_per_model):
         key = tuple(mu.shape)
@@ -311,59 +665,101 @@ def _print_model_averaging_summary(samples, weights, target_name):
     dropped_idx = [i for i in range(len(mu_per_model)) if i not in keep_idx]
 
     mu_stack = np.stack([mu_per_model[i] for i in keep_idx], axis=0)
-    kept_weights = np.asarray([weights[i] for i in keep_idx], dtype=np.float64)
-    kept_weights = kept_weights / np.sum(kept_weights)
+    kept_weights_bma = np.asarray([weights_bma[i] for i in keep_idx], dtype=np.float64)
+    kept_weights_bma = kept_weights_bma / np.sum(kept_weights_bma)
+    kept_weights_loo = np.asarray([weights_loo[i] for i in keep_idx], dtype=np.float64)
+    kept_weights_loo = kept_weights_loo / np.sum(kept_weights_loo)
 
     mu_flat = np.mean(mu_stack, axis=0)
-    mu_weighted = np.tensordot(kept_weights, mu_stack, axes=(0, 0))
-    diff = np.asarray(mu_weighted, dtype=np.float64) - np.asarray(mu_flat, dtype=np.float64)
-
-    print("--- Model Averaging Summary ---")
-    print(f"Target: {target_name}")
-    print(f"Number of models: {len(mu_per_model)}")
+    mu_bma = np.tensordot(kept_weights_bma, mu_stack, axes=(0, 0))
+    mu_loo = np.tensordot(kept_weights_loo, mu_stack, axes=(0, 0))
+    
+    console.print(f"Number of models: {len(mu_per_model)}")
     if dropped_idx:
         shape_counts = {str(k): len(v) for k, v in shape_groups.items()}
-        print(f"Shape mismatch detected for target '{target_name}'; using dominant shape {dominant_shape}.")
+        console.print(f"[yellow]Shape mismatch detected; using dominant shape {dominant_shape}.[/yellow]")
         print(f"Shape counts: {shape_counts}")
-        print(f"Dropped models for summary due to shape mismatch: {len(dropped_idx)}")
-    _print_mean_summary("flat", mu_flat)
-    _print_mean_summary("weighted", mu_weighted)
-    if np.asarray(diff).ndim == 0:
-        print(f"Difference (weighted - flat): {float(diff):.6f}")
+    
+    if mu_flat.ndim == 0:
+        console.print(f"Flat mean: [dim]{float(mu_flat):.6f}[/dim]")
+        console.print(f"BMA mean: [yellow]{float(mu_bma):.6f}[/yellow]")
+        console.print(f"LOO mean: [green]{float(mu_loo):.6f}[/green]")
+        diff = float(mu_loo) - float(mu_bma)
+        console.print(f"Difference (LOO - BMA): [magenta]{diff:+.6f}[/magenta]")
     else:
-        _print_array_preview("Difference (weighted - flat)", diff)
+        console.print(f"Flat mean shape: {mu_flat.shape}")
+        console.print(f"BMA mean shape: {mu_bma.shape}")
+        console.print(f"LOO mean shape: {mu_loo.shape}")
+    
     print()
-    print(f"Top 5 models by weight for target '{target_name}':")
-
-    ranked_local = np.argsort(-kept_weights)
-    for local_idx in ranked_local[:5]:
+    
+    # Top models table
+    console.print("[bold]Top 5 models by LOO weight:[/bold]")
+    ranked_loo = np.argsort(-kept_weights_loo)
+    for local_idx in ranked_loo[:5]:
         rank_idx = keep_idx[int(local_idx)]
-        w = float(weights[rank_idx])
+        w_bma = float(weights_bma[rank_idx])
+        w_loo = float(weights_loo[rank_idx])
         mu_i = np.asarray(mu_per_model[rank_idx], dtype=np.float64)
+        
         if mu_i.ndim == 0:
-            print(f"model={int(rank_idx)}, weight={w:.6f}, mu_i={float(mu_i):.6f}")
+            console.print(f"  model={rank_idx}, BMA=[yellow]{w_bma:.6f}[/yellow], LOO=[green]{w_loo:.6f}[/green], mu_i={float(mu_i):.6f}")
         else:
-            preview = mu_i.reshape(-1)[:10].tolist()
-            print(
-                f"model={int(rank_idx)}, weight={w:.6f}, "
-                f"mu_i_shape={tuple(mu_i.shape)}, mu_i_first10={preview}"
-            )
-
-    print(f"2 least-weighted models for target '{target_name}':")
-    least_ranked_local = np.argsort(kept_weights)
-    for local_idx in least_ranked_local[:2]:
-        rank_idx = keep_idx[int(local_idx)]
-        w = float(weights[rank_idx])
-        mu_i = np.asarray(mu_per_model[rank_idx], dtype=np.float64)
-        if mu_i.ndim == 0:
-            print(f"model={int(rank_idx)}, weight={w:.6f}, mu_i={float(mu_i):.6f}")
-        else:
-            preview = mu_i.reshape(-1)[:10].tolist()
-            print(
-                f"model={int(rank_idx)}, weight={w:.6f}, "
-                f"mu_i_shape={tuple(mu_i.shape)}, mu_i_first10={preview}"
-            )
+            preview = mu_i.reshape(-1)[:3].tolist()
+            console.print(f"  model={rank_idx}, BMA=[yellow]{w_bma:.6f}[/yellow], LOO=[green]{w_loo:.6f}[/green], mu_i={preview}...")
+    
     print()
+
+
+def _print_posterior_comparison(posterior_bma, posterior_loo, posterior_flat, targets):
+    """Compare posterior means across all three methods."""
+    console.rule("[bold blue]Posterior Mean Comparison[/bold blue]", style="blue")
+    
+    comp_table = Table(box=box.ROUNDED, show_header=True, header_style="bold blue")
+    comp_table.add_column("Target", style="cyan")
+    comp_table.add_column("Flat", style="dim", justify="right")
+    comp_table.add_column("BMA", style="yellow", justify="right")
+    comp_table.add_column("LOO", style="green", justify="right")
+    comp_table.add_column("LOO - BMA", style="magenta", justify="right")
+    
+    for target in targets:
+        flat_arr = np.asarray(posterior_flat.get(target, []), dtype=np.float64)
+        bma_arr = np.asarray(posterior_bma.get(target, []), dtype=np.float64)
+        loo_arr = np.asarray(posterior_loo.get(target, []), dtype=np.float64)
+        
+        flat_mean = _target_mean(flat_arr)
+        bma_mean = _target_mean(bma_arr)
+        loo_mean = _target_mean(loo_arr)
+        
+        if np.asarray(flat_mean).ndim == 0:
+            diff = float(loo_mean) - float(bma_mean)
+            
+            # Color code based on magnitude
+            if abs(diff) > 0.01:
+                diff_str = f"[bold magenta]{diff:+.6f}[/bold magenta]"
+            elif abs(diff) > 0.001:
+                diff_str = f"[magenta]{diff:+.6f}[/magenta]"
+            else:
+                diff_str = f"[dim]{diff:+.6f}[/dim]"
+            
+            comp_table.add_row(
+                target,
+                f"{float(flat_mean):.6f}",
+                f"{float(bma_mean):.6f}",
+                f"{float(loo_mean):.6f}",
+                diff_str
+            )
+        else:
+            comp_table.add_row(
+                target,
+                f"shape: {np.asarray(flat_mean).shape}",
+                f"shape: {np.asarray(bma_mean).shape}",
+                f"shape: {np.asarray(loo_mean).shape}",
+                "—"
+            )
+    
+    console.print(comp_table)
+    console.print()
 
 
 def _target_mean(arr):

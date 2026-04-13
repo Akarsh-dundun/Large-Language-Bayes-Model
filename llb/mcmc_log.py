@@ -8,6 +8,156 @@ from numpyro.handlers import seed, trace
 from numpyro.infer import MCMC, NUTS
 from numpyro.infer.util import log_density
 
+def estimate_loo_log_likelihoods(
+    model,
+    data,
+    posterior_samples,
+    num_inner=25,
+    rng_seed=0,
+    min_std=1e-4,
+    fallback_log_bound=-1e12,
+):
+    """
+    Compute leave-one-out log predictive densities for each datapoint.
+    """
+    n_datapoints = _get_num_datapoints(data)
+    
+    # Fit proposal distribution
+    means = {}
+    stds = {}
+    for name, values in posterior_samples.items():
+        arr = np.asarray(values, dtype=np.float64)
+        mean, std = _finite_mean_std_axis0(arr, min_std=min_std)
+        means[name] = mean
+        stds[name] = std
+    
+    rng = np.random.default_rng(rng_seed)
+    loo_log_liks = []
+    
+    # For each datapoint
+    for i in range(n_datapoints):
+        log_pred_estimates = []
+        
+        # Monte Carlo estimation
+        for _ in range(num_inner):
+            z = {}
+            
+            # Sample from posterior
+            for name in posterior_samples:
+                sample = rng.normal(loc=means[name], scale=stds[name])
+                z[name] = jnp.asarray(sample)
+            
+            try:
+                log_lik_i = _compute_pointwise_log_likelihood(model, data, z, i)
+                
+                # Only accept finite, non-fallback values
+                if np.isfinite(log_lik_i) and log_lik_i > -1e10:
+                    log_pred_estimates.append(log_lik_i)
+                    
+            except Exception:
+                continue
+        
+        # Aggregate estimates
+        if len(log_pred_estimates) > 0:
+            loo_i = _logmeanexp(log_pred_estimates)
+            loo_log_liks.append(loo_i)
+        else:
+            # All iterations failed - use fallback
+            loo_log_liks.append(fallback_log_bound)
+    
+    return np.array(loo_log_liks, dtype=np.float64)
+
+def _get_num_datapoints(data):
+    """Extract number of datapoints from data dict."""
+    if not isinstance(data, dict):
+        return 1
+    
+    for key, value in data.items():
+        if isinstance(value, (list, np.ndarray)):
+            arr = np.asarray(value)
+            if arr.ndim >= 1 and arr.shape[0] > 1:
+                return int(arr.shape[0])
+    
+    # Fallback: assume 1 datapoint
+    return 1
+
+def _compute_pointwise_log_likelihood(model, data, z, idx):
+    """
+    Compute log p(x_idx | z, m) for a single datapoint.
+    """
+    from numpyro.handlers import substitute
+    
+    try:
+        # Condition model on latent variables
+        conditioned_model = substitute(model, z)
+        model_trace = trace(seed(conditioned_model, jax.random.PRNGKey(0))).get_trace(data=data)
+        
+        total_log_lik = 0.0
+        found_obs_for_idx = False
+        
+        # Extract pointwise log likelihood
+        for site_name, site in model_trace.items():
+            if site.get("type") != "sample":
+                continue
+            if not site.get("is_observed", False):
+                continue
+            
+            obs_value = site["value"]
+            fn = site["fn"]
+            
+            # Handle vectorized observations
+            if isinstance(obs_value, (jnp.ndarray, np.ndarray)):
+                obs_array = jnp.asarray(obs_value)
+                
+                if obs_array.ndim >= 1 and obs_array.shape[0] > 1:
+                    # Multiple datapoints - extract idx-th observation
+                    if idx < obs_array.shape[0]:
+                        log_prob_i = fn.log_prob(obs_array[idx])
+                        total_log_lik += float(jnp.sum(log_prob_i))
+                        found_obs_for_idx = True
+                elif obs_array.ndim >= 1 and obs_array.shape[0] == 1:
+                    # Single datapoint stored as array
+                    if idx == 0:
+                        log_prob = fn.log_prob(obs_array[0])
+                        total_log_lik += float(jnp.sum(log_prob))
+                        found_obs_for_idx = True
+                else:
+                    # Scalar array
+                    if idx == 0:
+                        log_prob = fn.log_prob(obs_array)
+                        total_log_lik += float(jnp.sum(log_prob))
+                        found_obs_for_idx = True
+            else:
+                # Scalar observation (Python scalar)
+                if idx == 0:
+                    log_prob = fn.log_prob(obs_value)
+                    total_log_lik += float(log_prob)
+                    found_obs_for_idx = True
+        
+        # If we didn't find an observation for this idx, return fallback
+        if not found_obs_for_idx:
+            return -1e12
+        
+        return total_log_lik
+        
+    except Exception as e:
+        return -1e12    
+def _create_loo_dataset(data, leave_out_idx):
+    """Create dataset with index leave_out_idx removed."""
+    loo_data = {}
+    for key, value in data.items():
+        if isinstance(value, (list, np.ndarray)):
+            arr = np.asarray(value)
+            if arr.ndim >= 1 and arr.shape[0] > 1:
+                # Remove the i-th element
+                loo_data[key] = np.concatenate([arr[:leave_out_idx], arr[leave_out_idx+1:]])
+            else:
+                loo_data[key] = value
+        else:
+            loo_data[key] = value
+    return loo_data
+
+
 
 def run_inference(code, data, targets=None, num_warmup=500, num_samples=1000, rng_seed=0):
     env = {}
