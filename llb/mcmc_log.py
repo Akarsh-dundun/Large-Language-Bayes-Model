@@ -20,7 +20,7 @@ def estimate_loo_log_likelihoods(
     model,
     data,
     posterior_samples,
-    num_inner=25,
+    num_inner=200,
     num_warmup=100,
     num_samples=200,
     rng_seed=0,
@@ -39,7 +39,7 @@ def estimate_loo_log_likelihoods(
     
     Returns:
         If return_diagnostics=False: np.array of LOO log likelihoods
-        If return_diagnostics=True: dict with 'loo_elbos' and 'diagnostics'
+        If return_diagnostics=True: dict with 'loo_log_liks' and 'diagnostics'
     """
     if use_true_loo:
         result = _estimate_loo_true(
@@ -56,7 +56,7 @@ def estimate_loo_log_likelihoods(
     if return_diagnostics:
         return result
     else:
-        return result['loo_elbos'] if isinstance(result, dict) else result
+        return result['loo_log_liks'] if isinstance(result, dict) else result  # ← CHANGED FROM loo_elbos
 
 
 def _estimate_loo_true(
@@ -65,7 +65,7 @@ def _estimate_loo_true(
     rng_seed, min_std, fallback_log_bound
 ):
     n_datapoints = _get_num_datapoints(data)
-    loo_elbos = []
+    loo_log_liks = []  # Keep the variable name
     elbo_histories = []
 
     print(f"Computing TRUE LOO-ELBO for {n_datapoints} datapoints (this will take a while)...")
@@ -138,21 +138,21 @@ def _estimate_loo_true(
 
             if len(elbo_estimates) > 0:
                 elbo_i = np.mean(elbo_estimates)
-                loo_elbos.append(elbo_i)
+                loo_log_liks.append(elbo_i)
                 elbo_histories.append(elbo_estimates)
                 print(f"ELBO = {elbo_i:.4f} (±{np.std(elbo_estimates):.4f})")
             else:
-                loo_elbos.append(fallback_log_bound)
+                loo_log_liks.append(fallback_log_bound)
                 elbo_histories.append([])
                 print("FAILED (using fallback)")
 
         except Exception as e:
             print(f"ERROR: {e}")
-            loo_elbos.append(fallback_log_bound)
+            loo_log_liks.append(fallback_log_bound)
             elbo_histories.append([])
 
     return {
-        "loo_elbos": np.array(loo_elbos, dtype=np.float64),
+        "loo_log_liks": np.array(loo_log_liks, dtype=np.float64),  # ← CHANGED FROM loo_elbos
         "diagnostics": {
             "method": "true_loo_elbo",
             "elbo_histories": elbo_histories,
@@ -167,7 +167,7 @@ def _estimate_loo_true(
 def _estimate_loo_psis(model, data, posterior_samples, rng_seed, fallback_log_bound):
     """
     PSIS-LOO approximation using arviz.
-    Returns dict with loo_elbos and diagnostics.
+    Returns dict with loo_log_liks and diagnostics.
     """
     if not ARVIZ_AVAILABLE:
         raise ImportError(
@@ -207,7 +207,7 @@ def _estimate_loo_psis(model, data, posterior_samples, rng_seed, fallback_log_bo
     # Compute PSIS-LOO
     try:
         loo_result = az.loo(log_likelihood, pointwise=True)
-        loo_elbos = loo_result.loo_i.values
+        loo_log_liks = loo_result.loo_i.values  # Keep variable name consistent
         
         pareto_k = loo_result.pareto_k.values if hasattr(loo_result, 'pareto_k') else None
         warning = loo_result.warning if hasattr(loo_result, 'warning') else False
@@ -220,7 +220,7 @@ def _estimate_loo_psis(model, data, posterior_samples, rng_seed, fallback_log_bo
                 print(f"  ⚠️  {n_bad}/{n_datapoints} points have k > 0.7 (unreliable)")
         
         return {
-            'loo_elbos': np.array(loo_elbos, dtype=np.float64),
+            'loo_log_liks': np.array(loo_log_liks, dtype=np.float64),  # ← CHANGED FROM loo_elbos
             'diagnostics': {
                 'method': 'psis_loo',
                 'pareto_k': pareto_k,
@@ -233,13 +233,12 @@ def _estimate_loo_psis(model, data, posterior_samples, rng_seed, fallback_log_bo
     except Exception as e:
         print(f"PSIS-LOO failed: {e}, using fallback")
         return {
-            'loo_elbos': np.full(n_datapoints, fallback_log_bound, dtype=np.float64),
+            'loo_log_liks': np.full(n_datapoints, fallback_log_bound, dtype=np.float64),  # ← CHANGED
             'diagnostics': {
                 'method': 'psis_loo_failed',
                 'error': str(e),
             }
         }
-
 
 def _create_loo_dataset(data, leave_out_idx):
     """Create dataset with index leave_out_idx removed."""
@@ -394,7 +393,7 @@ def estimate_log_marginal_iw(
     model,
     data,
     posterior_samples,
-    num_inner=25,
+    num_inner=200,
     num_outer=1000,
     rng_seed=0,
     min_std=1e-4,

@@ -18,50 +18,106 @@ class NoValidModelsError(RuntimeError):
     """Raised when no valid generated models remain for aggregation."""
 
 
-def _solve_stacking_optimization(loo_log_liks_matrix, verbose=False, lambda_reg=0.01):
+def _solve_stacking_optimization(loo_log_liks_matrix, verbose=False, lambda_reg=0.01, kl_reference='uniform', reference_weights=None):
     """
     Solve the stacking optimization problem with detailed debugging.
+    
+    Args:
+        loo_log_liks_matrix: (n_datapoints, n_models) matrix of LOO log likelihoods
+        verbose: Print detailed optimization info
+        lambda_reg: Regularization strength
+        kl_reference: Which reference to use for KL regularization
+                      - 'uniform': KL(w || uniform) - encourages diversity
+                      - 'bma': KL(w || w_bma) - stay close to BMA weights
+                      - 'custom': Use provided reference_weights
+                      - None or 'none': No regularization (pure stacking)
+        reference_weights: Custom reference weights (only used if kl_reference='custom')
     """
     n_datapoints, n_models = loo_log_liks_matrix.shape
     
     if n_models == 1:
         return np.array([1.0])
     
+    # Determine reference distribution for regularization
+    if kl_reference is None or kl_reference == 'none':
+        # No regularization
+        ref_weights = None
+        reg_type = "None"
+    elif kl_reference == 'uniform':
+        ref_weights = np.ones(n_models) / n_models
+        reg_type = "Uniform (entropy)"
+    elif kl_reference == 'bma':
+        if reference_weights is None:
+            raise ValueError("reference_weights must be provided when kl_reference='bma'")
+        ref_weights = np.asarray(reference_weights, dtype=np.float64)
+        ref_weights = ref_weights / np.sum(ref_weights)  # Ensure normalized
+        reg_type = "BMA weights"
+    elif kl_reference == 'custom':
+        if reference_weights is None:
+            raise ValueError("reference_weights must be provided when kl_reference='custom'")
+        ref_weights = np.asarray(reference_weights, dtype=np.float64)
+        ref_weights = ref_weights / np.sum(ref_weights)
+        reg_type = "Custom"
+    else:
+        raise ValueError(f"Unknown kl_reference: {kl_reference}. Must be 'uniform', 'bma', 'custom', or None")
+    
     # Add rich panel header
     console.rule("[bold cyan]Stacking Optimization[/bold cyan]", style="cyan")
     print(f"n_datapoints: {n_datapoints}, n_models: {n_models}")
+    print(f"Regularization: λ={lambda_reg}, Reference: {reg_type}")
     
     def objective(w):
-        """Negative stacking objective with entropy regularization."""
+        """Negative stacking objective with KL regularization."""
         eps = 1e-12
         w = np.asarray(w, dtype=np.float64)
         w_safe = np.maximum(w, eps)
 
+        # Stacking term
         log_sum = np.zeros(n_datapoints, dtype=np.float64)
         for i in range(n_datapoints):
             max_val = np.max(loo_log_liks_matrix[i, :])
             log_sum[i] = max_val + np.log(
                 np.sum(w_safe * np.exp(loo_log_liks_matrix[i, :] - max_val))
             )
-
-        entropy_term = np.sum(w_safe * np.log(w_safe))
-        return -np.mean(log_sum) + lambda_reg * entropy_term
-
+        
+        stacking_term = np.mean(log_sum)
+        
+        # Regularization term
+        if ref_weights is None:
+            reg_term = 0.0
+        else:
+            # KL(w || ref) = Σ w_k log(w_k / ref_k)
+            #              = Σ w_k log(w_k) - Σ w_k log(ref_k)
+            ref_safe = np.maximum(ref_weights, eps)
+            kl_div = np.sum(w_safe * (np.log(w_safe) - np.log(ref_safe)))
+            reg_term = lambda_reg * kl_div
+        
+        return -stacking_term + reg_term
 
     def gradient(w):
-        """Gradient of the negative objective with entropy regularization."""
+        """Gradient of the negative objective with KL regularization."""
         eps = 1e-12
         w = np.asarray(w, dtype=np.float64)
         w_safe = np.maximum(w, eps)
 
+        # Stacking gradient
         grad = np.zeros(n_models, dtype=np.float64)
         for i in range(n_datapoints):
             max_val = np.max(loo_log_liks_matrix[i, :])
             exp_vals = np.exp(loo_log_liks_matrix[i, :] - max_val)
             weighted_sum = np.sum(w_safe * exp_vals)
             grad += exp_vals / weighted_sum
-
-        return -grad / n_datapoints + lambda_reg * (np.log(w_safe) + 1.0)
+        
+        grad = -grad / n_datapoints
+        
+        # Regularization gradient
+        if ref_weights is not None:
+            # ∂/∂w_k KL(w || ref) = log(w_k) - log(ref_k) + 1
+            ref_safe = np.maximum(ref_weights, eps)
+            kl_grad = np.log(w_safe) - np.log(ref_safe) + 1.0
+            grad += lambda_reg * kl_grad
+        
+        return grad
     
     constraints = {
         'type': 'eq',
@@ -77,6 +133,10 @@ def _solve_stacking_optimization(loo_log_liks_matrix, verbose=False, lambda_reg=
     initial_grad = gradient(w0)
     console.print(f"Initial gradient norm: [cyan]{np.linalg.norm(initial_grad):.10f}[/cyan]")
     console.print(f"Initial gradient (first 5): [yellow]{initial_grad[:5]}[/yellow]")
+    
+    if ref_weights is not None:
+        initial_kl = np.sum(w0 * (np.log(w0 + 1e-12) - np.log(ref_weights + 1e-12)))
+        console.print(f"Initial KL divergence: [cyan]{initial_kl:.6f}[/cyan]")
     
     if np.allclose(initial_grad, 0, atol=1e-8):
         console.print("\n[yellow]⚠️  GRADIENT IS ZERO at uniform weights![/yellow]")
@@ -110,6 +170,11 @@ def _solve_stacking_optimization(loo_log_liks_matrix, verbose=False, lambda_reg=
     console.print(f"  Final weights (first 5): [yellow]{weights[:5]}[/yellow]")
     console.print(f"  Weight range: [[cyan]{weights.min():.6f}[/cyan], [cyan]{weights.max():.6f}[/cyan]]")
     console.print(f"  Weight std: [cyan]{np.std(weights):.6f}[/cyan]")
+    
+    if ref_weights is not None:
+        final_kl = np.sum(weights * (np.log(weights + 1e-12) - np.log(ref_weights + 1e-12)))
+        console.print(f"  Final KL divergence: [cyan]{final_kl:.6f}[/cyan]")
+        console.print(f"  KL reduction: [green]{initial_kl - final_kl:+.6f}[/green]")
     
     if np.allclose(weights, w0, atol=1e-6):
         console.print("\n[yellow]⚠️  WARNING: Weights did not change from initial uniform![/yellow]")
@@ -178,6 +243,8 @@ def infer(
     loo_num_warmup=50,      # NEW
     loo_num_samples=100,    # NEW
     use_true_loo=True,      # NEW FLAG
+    loo_lambda_reg=0.01,           # NEW: regularization strength
+    loo_kl_reference='uniform', 
     verbose=False,
     auto_print_result=True,
 ):
@@ -200,6 +267,7 @@ def infer(
         targets=targets,
         n_models=n_models,
     )
+    #print(model_codes)
     generated_models = len(model_codes)
     all_generated_codes = model_codes.copy()
     model_codes, deduplicated_models = _dedupe_model_codes(model_codes)
@@ -430,7 +498,13 @@ def infer(
         console.rule(style="magenta")
         
         # Optimize
-        weights_loo_subset = _solve_stacking_optimization(loo_matrix, verbose=verbose, lambda_reg=0.01)
+        weights_loo_subset = _solve_stacking_optimization(
+            loo_matrix, 
+            verbose=verbose, 
+            lambda_reg=loo_lambda_reg,
+            kl_reference=loo_kl_reference,
+            reference_weights=weights_bma_full[valid_models_mask] if loo_kl_reference == 'bma' else None
+            )
         
         # Map back to full valid set
         weights_loo_full = np.zeros(len(valid))
