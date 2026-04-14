@@ -35,33 +35,32 @@ def _solve_stacking_optimization(loo_log_liks_matrix, verbose=False, lambda_reg=
         """Negative stacking objective with entropy regularization."""
         eps = 1e-12
         w = np.asarray(w, dtype=np.float64)
+        w_safe = np.maximum(w, eps)
 
         log_sum = np.zeros(n_datapoints, dtype=np.float64)
         for i in range(n_datapoints):
             max_val = np.max(loo_log_liks_matrix[i, :])
             log_sum[i] = max_val + np.log(
-                np.sum(w * np.exp(loo_log_liks_matrix[i, :] - max_val))
+                np.sum(w_safe * np.exp(loo_log_liks_matrix[i, :] - max_val))
             )
 
-        # maximize mean(log_sum) - lambda_reg * sum_k w_k log w_k
-        # => minimize negative of that
-        entropy_term = np.sum(np.clip(w, eps, 1.0) * np.log(np.clip(w, eps, 1.0)))
+        entropy_term = np.sum(w_safe * np.log(w_safe))
         return -np.mean(log_sum) + lambda_reg * entropy_term
-    
+
+
     def gradient(w):
         """Gradient of the negative objective with entropy regularization."""
         eps = 1e-12
         w = np.asarray(w, dtype=np.float64)
-        w_safe = np.clip(w, eps, 1.0)
+        w_safe = np.maximum(w, eps)
 
         grad = np.zeros(n_models, dtype=np.float64)
         for i in range(n_datapoints):
             max_val = np.max(loo_log_liks_matrix[i, :])
             exp_vals = np.exp(loo_log_liks_matrix[i, :] - max_val)
-            weighted_sum = np.sum(w * exp_vals)
+            weighted_sum = np.sum(w_safe * exp_vals)
             grad += exp_vals / weighted_sum
 
-        # derivative of lambda_reg * sum_k w_k log w_k is lambda_reg * (log w_k + 1)
         return -grad / n_datapoints + lambda_reg * (np.log(w_safe) + 1.0)
     
     constraints = {
