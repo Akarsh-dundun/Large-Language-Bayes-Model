@@ -11,3 +11,6 @@ llb/examples.py
 llb/llm.py
 llb/mcmc_log.py
 llb/model_generator.py
+tests/test_gemma4_live.py
+tests/test_generate_models.py
+tests/test_llama32_live.py

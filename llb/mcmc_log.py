@@ -28,41 +28,198 @@ def estimate_loo_log_likelihoods(
     fallback_log_bound=-1e12,
     use_true_loo=True,
     return_diagnostics=False,
+    verbose=True,
 ):
     """
     Compute leave-one-out log predictive densities.
-    
+
     Args:
-        use_true_loo: If True, use true LOO-ELBO (expensive). 
+        use_true_loo: If True, use true LOO-ELBO (expensive).
                       If False, use PSIS-LOO approximation (fast).
         return_diagnostics: If True, return dict with diagnostics.
-    
+        verbose: If True, print per-datapoint progress; if False, run silently.
+
     Returns:
         If return_diagnostics=False: np.array of LOO log likelihoods
         If return_diagnostics=True: dict with 'loo_log_liks' and 'diagnostics'
     """
     if use_true_loo:
         result = _estimate_loo_true(
-            model, data, posterior_samples, 
-            num_inner, num_warmup, num_samples, 
-            rng_seed, min_std, fallback_log_bound
+            model, data, posterior_samples,
+            num_inner, num_warmup, num_samples,
+            rng_seed, min_std, fallback_log_bound,
+            verbose=verbose,
         )
     else:
         result = _estimate_loo_psis(
             model, data, posterior_samples,
             rng_seed, fallback_log_bound
         )
-    
+
     if return_diagnostics:
         return result
     else:
         return result['loo_log_liks'] if isinstance(result, dict) else result
 
 
+def estimate_loo_log_likelihoods_parallel(
+    code,
+    data,
+    posterior_samples,
+    num_inner=25,
+    num_warmup=100,
+    num_samples=200,
+    rng_seed=0,
+    min_std=1e-4,
+    fallback_log_bound=-1e12,
+    n_workers=4,
+    return_diagnostics=False,
+):
+    """Parallel true-LOO across held-out indices using a process pool.
+
+    JAX-traced numpyro models do not always pickle; each worker re-execs the
+    code string to get a fresh model. This is safe and reproducible because
+    every worker also re-derives its per-index PRNG seed from rng_seed.
+
+    Falls back to the serial in-process loop when ``n_workers <= 1``.
+    """
+    n_datapoints = _get_num_datapoints(data)
+    if n_workers is None or n_workers <= 1 or n_datapoints <= 1:
+        env = {}
+        exec(code, env)
+        model = env["model"]
+        return estimate_loo_log_likelihoods(
+            model=model,
+            data=data,
+            posterior_samples=posterior_samples,
+            num_inner=num_inner,
+            num_warmup=num_warmup,
+            num_samples=num_samples,
+            rng_seed=rng_seed,
+            min_std=min_std,
+            fallback_log_bound=fallback_log_bound,
+            use_true_loo=True,
+            return_diagnostics=return_diagnostics,
+            verbose=False,
+        )
+
+    import multiprocessing as mp
+
+    # Posterior samples often contain jax DeviceArrays; coerce to numpy for
+    # cheap pickling across worker processes.
+    posterior_for_worker = {name: np.asarray(arr) for name, arr in posterior_samples.items()}
+    data_for_worker = _to_picklable(data)
+
+    n_workers = min(int(n_workers), n_datapoints)
+    args = [
+        (
+            i, code, data_for_worker, posterior_for_worker,
+            num_inner, num_warmup, num_samples,
+            int(rng_seed) + i, float(min_std), float(fallback_log_bound),
+        )
+        for i in range(n_datapoints)
+    ]
+
+    ctx = mp.get_context("spawn")
+    with ctx.Pool(processes=n_workers) as pool:
+        results = pool.map(_loo_worker, args)
+
+    loo_log_liks = np.array([r["loo_log_lik"] for r in results], dtype=np.float64)
+    elbo_histories = [r["elbo_history"] for r in results]
+
+    out = {
+        "loo_log_liks": loo_log_liks,
+        "diagnostics": {
+            "method": "true_loo_elbo_parallel",
+            "elbo_histories": elbo_histories,
+            "n_datapoints": n_datapoints,
+            "num_inner": num_inner,
+            "num_warmup": num_warmup,
+            "num_samples": num_samples,
+            "n_workers": n_workers,
+        },
+    }
+    return out if return_diagnostics else loo_log_liks
+
+
+def _loo_worker(args):
+    """Compute LOO log lik for one held-out index in a fresh worker process."""
+    (
+        i, code, data, posterior_samples,
+        num_inner, num_warmup, num_samples,
+        rng_seed, min_std, fallback_log_bound,
+    ) = args
+    try:
+        env = {}
+        exec(code, env)
+        model = env["model"]
+        loo_data = _create_loo_dataset(data, i)
+
+        kernel = NUTS(model)
+        mcmc = MCMC(kernel, num_warmup=num_warmup, num_samples=num_samples, progress_bar=False)
+        mcmc.run(jax.random.PRNGKey(rng_seed), data=loo_data)
+        loo_posterior_samples = mcmc.get_samples(group_by_chain=False)
+
+        means = {}
+        stds = {}
+        for name, values in loo_posterior_samples.items():
+            arr = np.asarray(values, dtype=np.float64)
+            mean, std = _finite_mean_std_axis0(arr, min_std=min_std)
+            means[name] = mean
+            stds[name] = std
+
+        rng = np.random.default_rng(rng_seed + 1_000_000)
+        elbo_estimates = []
+        for _ in range(num_inner):
+            z = {}
+            log_q = 0.0
+            for name in loo_posterior_samples:
+                sample = rng.normal(loc=means[name], scale=stds[name])
+                z[name] = jnp.asarray(sample)
+                centered = (sample - means[name]) / stds[name]
+                log_q += float(
+                    -0.5 * np.sum(
+                        centered * centered
+                        + np.log(2.0 * np.pi)
+                        + 2.0 * np.log(stds[name])
+                    )
+                )
+            try:
+                log_lik_i = _compute_pointwise_log_likelihood(model, data, z, i)
+                log_prior_loo, _ = log_density(model, (), {"data": loo_data}, z)
+                elbo_term = log_lik_i + float(log_prior_loo) - log_q
+                if np.isfinite(elbo_term):
+                    elbo_estimates.append(elbo_term)
+            except Exception:
+                continue
+
+        if elbo_estimates:
+            return {"loo_log_lik": float(np.mean(elbo_estimates)),
+                    "elbo_history": list(elbo_estimates)}
+        return {"loo_log_lik": fallback_log_bound, "elbo_history": []}
+    except Exception:
+        return {"loo_log_lik": fallback_log_bound, "elbo_history": []}
+
+
+def _to_picklable(d):
+    out = {}
+    for k, v in d.items():
+        if isinstance(v, (jnp.ndarray,)):
+            out[k] = np.asarray(v)
+        elif isinstance(v, np.ndarray):
+            out[k] = v
+        elif isinstance(v, list):
+            out[k] = list(v)
+        else:
+            out[k] = v
+    return out
+
+
 def _estimate_loo_true(
     model, data, posterior_samples,
     num_inner, num_warmup, num_samples,
-    rng_seed, min_std, fallback_log_bound
+    rng_seed, min_std, fallback_log_bound,
+    verbose=True,
 ):
     """
     True LOO-ELBO implementation (Algorithm 2).
@@ -71,11 +228,13 @@ def _estimate_loo_true(
     n_datapoints = _get_num_datapoints(data)
     loo_log_liks = []
     elbo_histories = []  # Track ELBO convergence for each datapoint
-    
-    print(f"Computing TRUE LOO-ELBO for {n_datapoints} datapoints (this will take a while)...")
-    
+
+    if verbose:
+        print(f"Computing TRUE LOO-ELBO for {n_datapoints} datapoints (this will take a while)...")
+
     for i in range(n_datapoints):
-        print(f"  LOO for datapoint {i+1}/{n_datapoints}...", end=" ")
+        if verbose:
+            print(f"  LOO for datapoint {i+1}/{n_datapoints}...", end=" ")
         
         try:
             # Step 1: Create LOO dataset
@@ -146,14 +305,17 @@ def _estimate_loo_true(
                 elbo_i = np.mean(elbo_estimates)
                 loo_log_liks.append(elbo_i)
                 elbo_histories.append(elbo_estimates)
-                print(f"ELBO = {elbo_i:.4f} (±{np.std(elbo_estimates):.4f})")
+                if verbose:
+                    print(f"ELBO = {elbo_i:.4f} (±{np.std(elbo_estimates):.4f})")
             else:
                 loo_log_liks.append(fallback_log_bound)
                 elbo_histories.append([])
-                print(f"FAILED (using fallback)")
-                
+                if verbose:
+                    print("FAILED (using fallback)")
+
         except Exception as e:
-            print(f"ERROR: {e}")
+            if verbose:
+                print(f"ERROR: {e}")
             loo_log_liks.append(fallback_log_bound)
             elbo_histories.append([])
     
@@ -353,7 +515,7 @@ def run_inference(code, data, targets=None, num_warmup=500, num_samples=1000, rn
     kernel = NUTS(model)
     mcmc = MCMC(kernel, num_warmup=num_warmup, num_samples=num_samples, progress_bar=False)
     try:
-        mcmc.run(jax.random.PRNGKey(rng_seed), data=data)
+        mcmc.run(jax.random.PRNGKey(rng_seed), data=data, extra_fields=("diverging",))
     except Exception as exc:
         msg = str(exc)
         if "TracerIntegerConversionError" in msg or "__index__() method was called on traced array" in msg:
@@ -366,6 +528,8 @@ def run_inference(code, data, targets=None, num_warmup=500, num_samples=1000, rn
 
     samples = mcmc.get_samples(group_by_chain=False)
     available = sorted(samples.keys())
+
+    diagnostics = _extract_mcmc_diagnostics(mcmc, samples)
 
     if targets is None:
         selected_targets = available
@@ -393,7 +557,179 @@ def run_inference(code, data, targets=None, num_warmup=500, num_samples=1000, rn
         "target_samples": target_samples,
         "available_sites": available,
         "missing_targets": missing_targets,
+        "mcmc_diagnostics": diagnostics,
     }
+
+
+def _extract_mcmc_diagnostics(mcmc, samples):
+    """Return divergence count, per-site r_hat (chain count permitting), and per-site n_eff."""
+    out = {
+        "num_divergences": None,
+        "num_samples": None,
+        "num_chains": None,
+        "r_hat": {},
+        "n_eff": {},
+    }
+    try:
+        extras = mcmc.get_extra_fields(group_by_chain=False)
+        if "diverging" in extras:
+            div = np.asarray(extras["diverging"])
+            out["num_divergences"] = int(div.sum())
+    except Exception:
+        pass
+
+    try:
+        first_value = next(iter(samples.values()))
+        out["num_samples"] = int(np.asarray(first_value).shape[0])
+    except StopIteration:
+        pass
+
+    try:
+        out["num_chains"] = int(getattr(mcmc, "num_chains", 1))
+    except Exception:
+        pass
+
+    try:
+        from numpyro.diagnostics import effective_sample_size, gelman_rubin
+        # Both helpers expect (num_chains, num_samples, *event_shape).
+        try:
+            grouped = mcmc.get_samples(group_by_chain=True)
+        except Exception:
+            grouped = None
+        for name, arr in (grouped or {}).items():
+            arr_np = np.asarray(arr)
+            if arr_np.ndim < 2:
+                continue
+            try:
+                ess = effective_sample_size(arr_np)
+                out["n_eff"][name] = _summarize_diag(ess)
+            except Exception:
+                pass
+            if arr_np.shape[0] > 1:
+                try:
+                    rhat = gelman_rubin(arr_np)
+                    out["r_hat"][name] = _summarize_diag(rhat)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    return out
+
+
+def _summarize_diag(arr):
+    """Return min/median/max for any-shape diagnostic array."""
+    a = np.asarray(arr, dtype=np.float64).ravel()
+    a = a[np.isfinite(a)]
+    if a.size == 0:
+        return {"min": None, "median": None, "max": None}
+    return {
+        "min": float(np.min(a)),
+        "median": float(np.median(a)),
+        "max": float(np.max(a)),
+    }
+
+
+def estimate_test_log_likelihoods(
+    model,
+    train_data,
+    test_data,
+    posterior_samples,
+    rng_seed=0,
+    fallback_log_bound=-1e12,
+):
+    """Posterior-predictive log p(x_test_i | x_train, m) for each test point.
+
+    Uses a Monte Carlo estimate over the posterior samples already fitted on
+    ``train_data``. For each test point we evaluate the per-point log
+    likelihood under the model conditioned on a posterior draw, then take the
+    log-mean-exp across draws.
+
+    Returns ``(np.ndarray of shape (n_test,), diagnostics dict)``.
+    """
+    if test_data is None:
+        return np.zeros(0, dtype=np.float64), {"method": "skipped"}
+
+    n_test = _get_num_datapoints(test_data)
+    if n_test <= 0:
+        return np.zeros(0, dtype=np.float64), {"method": "empty_test_data"}
+
+    # Build a combined dataset {train + test, shape (n_train + n_test, ...)}.
+    combined = _concatenate_train_test(train_data, test_data)
+    n_train = _get_num_datapoints(train_data)
+
+    sample_iter = list(zip(*[
+        (name, np.asarray(values)) for name, values in posterior_samples.items()
+    ])) if posterior_samples else []
+
+    n_draws = 0
+    if posterior_samples:
+        first = next(iter(posterior_samples.values()))
+        n_draws = int(np.asarray(first).shape[0])
+
+    if n_draws == 0:
+        return np.full(n_test, fallback_log_bound, dtype=np.float64), {
+            "method": "test_predictive",
+            "n_draws": 0,
+            "n_test": n_test,
+            "reason": "no posterior samples",
+        }
+
+    # Per (test_point, draw) log-likelihood matrix.
+    log_lik = np.full((n_draws, n_test), fallback_log_bound, dtype=np.float64)
+    posterior_arrays = {name: np.asarray(values) for name, values in posterior_samples.items()}
+
+    for s in range(n_draws):
+        z = {name: jnp.asarray(arr[s]) for name, arr in posterior_arrays.items()}
+        for j in range(n_test):
+            global_idx = n_train + j
+            try:
+                ll = _compute_pointwise_log_likelihood(model, combined, z, global_idx)
+                if np.isfinite(ll):
+                    log_lik[s, j] = ll
+            except Exception:
+                pass
+
+    test_log_liks = np.empty(n_test, dtype=np.float64)
+    for j in range(n_test):
+        col = log_lik[:, j]
+        finite = col[np.isfinite(col) & (col > fallback_log_bound + 1.0)]
+        if finite.size == 0:
+            test_log_liks[j] = fallback_log_bound
+        else:
+            m = float(np.max(finite))
+            test_log_liks[j] = m + math.log(np.mean(np.exp(finite - m)))
+
+    diagnostics = {
+        "method": "test_predictive_lme",
+        "n_draws": n_draws,
+        "n_test": n_test,
+    }
+    return test_log_liks, diagnostics
+
+
+def _concatenate_train_test(train_data, test_data):
+    """Concatenate train and test arrays along axis 0 for shared keys."""
+    if not isinstance(test_data, dict):
+        return train_data
+    out = {}
+    for key, train_val in train_data.items():
+        test_val = test_data.get(key)
+        if test_val is None:
+            out[key] = train_val
+            continue
+        if isinstance(train_val, (list, np.ndarray)) and isinstance(test_val, (list, np.ndarray)):
+            t_arr = np.asarray(train_val)
+            te_arr = np.asarray(test_val)
+            if t_arr.ndim >= 1 and te_arr.ndim >= 1:
+                out[key] = np.concatenate([t_arr, te_arr])
+                continue
+        out[key] = train_val
+    # Carry over keys present only in test_data (rare).
+    for key, val in test_data.items():
+        if key not in out:
+            out[key] = val
+    return out
 
 
 def estimate_log_marginal_iw(

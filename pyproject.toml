@@ -13,8 +13,22 @@ dependencies = [
   "requests>=2.31",
   "jax>=0.4.25",
   "jaxlib>=0.4.25",
-  "numpyro>=0.14.0"
+  "numpyro>=0.14.0",
+  "rich>=15.0.0",
+  "matplotlib>=3.10.8",
+  "pandas>=2.3.3",
+  "scipy>=1.15.3",
 ]
 
 [tool.setuptools]
 packages = ["llb"]
+
+[tool.pytest.ini_options]
+markers = [
+    "live: requires a running Ollama server with the model pulled",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]

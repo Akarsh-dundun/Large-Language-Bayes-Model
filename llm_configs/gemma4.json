@@ -1,0 +1,9 @@
+{
+  "name": "gemma4_e4b",
+  "api_url": "http://127.0.0.1:11434/api/generate",
+  "api_key": null,
+  "api_model": "gemma4:e4b",
+  "llm_timeout": null,
+  "llm_max_retries": 2,
+  "llm_retry_backoff": 2.0
+}

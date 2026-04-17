@@ -1,0 +1,15 @@
+{
+  "name": "coin_flip",
+  "text": "I have a bunch of coin flips. What's the bias?",
+  "data": {
+    "flips": [0, 1, 0, 1, 1, 0]
+  },
+  "test_data": null,
+  "targets": ["true_bias"],
+  "true_latents": null,
+  "task_type": "estimation",
+  "metadata": {
+    "internet_seen": true,
+    "notes": "Original LLB coin example. Training data is the original six flips from trial.py. No test set or ground truth latent yet."
+  }
+}

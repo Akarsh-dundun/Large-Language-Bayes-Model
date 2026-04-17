@@ -1,2 +1,5 @@
 __pycache__/
 *.pyc
+experiment_results/
+model_cache/
+slurm_logs/

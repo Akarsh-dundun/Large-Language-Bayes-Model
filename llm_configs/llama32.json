@@ -1,0 +1,9 @@
+{
+  "name": "llama32",
+  "api_url": "http://127.0.0.1:11434/api/generate",
+  "api_key": null,
+  "api_model": "llama3.2:latest",
+  "llm_timeout": null,
+  "llm_max_retries": 2,
+  "llm_retry_backoff": 2.0
+}

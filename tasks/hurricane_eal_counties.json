@@ -1,0 +1,234 @@
+{
+  "name": "hurricane_eal_counties",
+  "text": "I have the expected annual hurricane-related economic losses, in millions of US dollars, for 20 hurricane-exposed US counties. Losses are strictly positive and vary across several orders of magnitude. Estimate the underlying loss distribution and predict losses for 10 held-out counties.",
+  "data": {
+    "losses_musd": [
+      0.09200477787935614,
+      0.00471928422008211,
+      4.155439034896968,
+      92.30826526798515,
+      4.2400780640295705,
+      53.7444988040161,
+      0.5223289606356091,
+      30.667256702487823,
+      0.5284043468793128,
+      0.8987165891376859,
+      0.012467757352690217,
+      0.09005127613839095,
+      0.019182545406214977,
+      2.278579906580923,
+      0.0012703353235492515,
+      9.676316191924393,
+      0.18612204332988397,
+      3.3008142963453806,
+      0.10317678048853124,
+      1.5125674202985078
+    ]
+  },
+  "test_data": {
+    "losses_musd": [
+      1.3124950112373328,
+      0.683828038212993,
+      117.80468299601368,
+      0.08088216611710093,
+      0.15656553718436142,
+      3.487419297800727,
+      0.05456640560370809,
+      0.2162721283308323,
+      0.6850168078932841,
+      0.04722273279304225
+    ]
+  },
+  "targets": [
+    "median_loss"
+  ],
+  "true_latents": null,
+  "task_type": "prediction",
+  "metadata": {
+    "internet_seen": true,
+    "source": "FEMA National Risk Index v1.20 (Dec 2025)",
+    "attribute": "HRCN_EALT",
+    "source_url": "https://services.arcgis.com/XG15cJAlne2vxtgt/arcgis/rest/services/National_Risk_Index_Counties/FeatureServer/0/query",
+    "units": "USD millions",
+    "scale_divisor": 1000000.0,
+    "value_dtype": "float",
+    "seed": 0,
+    "state_filter": [
+      "FL",
+      "TX",
+      "LA",
+      "NC",
+      "SC",
+      "GA",
+      "AL",
+      "MS",
+      "VA",
+      "MD",
+      "DE",
+      "NJ",
+      "NY",
+      "CT",
+      "MA",
+      "ME"
+    ],
+    "positive_only": true,
+    "n_train": 20,
+    "n_test": 10,
+    "counties_train": [
+      {
+        "state": "TX",
+        "county": "Ellis",
+        "stcofips": "48139"
+      },
+      {
+        "state": "TX",
+        "county": "Martin",
+        "stcofips": "48317"
+      },
+      {
+        "state": "SC",
+        "county": "Bamberg",
+        "stcofips": "45009"
+      },
+      {
+        "state": "NC",
+        "county": "Craven",
+        "stcofips": "37049"
+      },
+      {
+        "state": "TX",
+        "county": "Jasper",
+        "stcofips": "48241"
+      },
+      {
+        "state": "LA",
+        "county": "Lafourche",
+        "stcofips": "22057"
+      },
+      {
+        "state": "VA",
+        "county": "Surry",
+        "stcofips": "51181"
+      },
+      {
+        "state": "NY",
+        "county": "Kings",
+        "stcofips": "36047"
+      },
+      {
+        "state": "VA",
+        "county": "Charlotte",
+        "stcofips": "51037"
+      },
+      {
+        "state": "MS",
+        "county": "Clarke",
+        "stcofips": "28023"
+      },
+      {
+        "state": "TX",
+        "county": "Archer",
+        "stcofips": "48009"
+      },
+      {
+        "state": "GA",
+        "county": "Walker",
+        "stcofips": "13295"
+      },
+      {
+        "state": "VA",
+        "county": "Lee",
+        "stcofips": "51105"
+      },
+      {
+        "state": "AL",
+        "county": "Conecuh",
+        "stcofips": "01035"
+      },
+      {
+        "state": "TX",
+        "county": "Motley",
+        "stcofips": "48345"
+      },
+      {
+        "state": "NC",
+        "county": "Bertie",
+        "stcofips": "37015"
+      },
+      {
+        "state": "AL",
+        "county": "Lamar",
+        "stcofips": "01075"
+      },
+      {
+        "state": "NC",
+        "county": "Currituck",
+        "stcofips": "37053"
+      },
+      {
+        "state": "TX",
+        "county": "Franklin",
+        "stcofips": "48159"
+      },
+      {
+        "state": "GA",
+        "county": "Worth",
+        "stcofips": "13321"
+      }
+    ],
+    "counties_test": [
+      {
+        "state": "GA",
+        "county": "Dodge",
+        "stcofips": "13091"
+      },
+      {
+        "state": "SC",
+        "county": "Fairfield",
+        "stcofips": "45039"
+      },
+      {
+        "state": "FL",
+        "county": "Bay",
+        "stcofips": "12005"
+      },
+      {
+        "state": "NC",
+        "county": "Yancey",
+        "stcofips": "37199"
+      },
+      {
+        "state": "NC",
+        "county": "Polk",
+        "stcofips": "37149"
+      },
+      {
+        "state": "TX",
+        "county": "Refugio",
+        "stcofips": "48391"
+      },
+      {
+        "state": "AL",
+        "county": "Bibb",
+        "stcofips": "01007"
+      },
+      {
+        "state": "NY",
+        "county": "Madison",
+        "stcofips": "36053"
+      },
+      {
+        "state": "AL",
+        "county": "Madison",
+        "stcofips": "01089"
+      },
+      {
+        "state": "TX",
+        "county": "Tom Green",
+        "stcofips": "48451"
+      }
+    ],
+    "drawn_at": "2026-04-17",
+    "notes": "IID assumption is approximate. Counties differ in population, building stock, and coastal exposure."
+  }
+}

@@ -1,0 +1,217 @@
+{
+  "name": "inland_flood_eal",
+  "text": "I have the expected annual inland-flooding economic losses, in millions of US dollars, for 20 US counties drawn from across the country. Losses are strictly positive and span many orders of magnitude. Estimate the underlying loss distribution and predict losses for 10 held-out counties.",
+  "data": {
+    "losses_musd": [
+      25.13729005324481,
+      8.100135363323222,
+      73.18047335618054,
+      3.182847017325288,
+      6.395653877310234,
+      13.041711001326174,
+      1.0522110628823484,
+      3.4497775799792336,
+      1.1981632826446382,
+      1.0662319976852837,
+      31.742021444234393,
+      0.6406615097944626,
+      11.66769764832628,
+      40.59000546053881,
+      14.494672365837964,
+      2.6665517045570466,
+      3.5118030980689405,
+      4.504174888852457,
+      2.0385569958373417,
+      2.988115305026415
+    ]
+  },
+  "test_data": {
+    "losses_musd": [
+      7.724012028368477,
+      35.037812645506506,
+      185.2616945767778,
+      39.90204018013258,
+      6.176906276316464,
+      70.15892032614968,
+      2.0835564900268952,
+      28.473747935437626,
+      2.859084838929436,
+      1.3969264255310723
+    ]
+  },
+  "targets": [
+    "median_loss"
+  ],
+  "true_latents": null,
+  "task_type": "prediction",
+  "metadata": {
+    "internet_seen": true,
+    "source": "FEMA National Risk Index v1.20 (Dec 2025)",
+    "attribute": "IFLD_EALT",
+    "source_url": "https://services.arcgis.com/XG15cJAlne2vxtgt/arcgis/rest/services/National_Risk_Index_Counties/FeatureServer/0/query",
+    "units": "USD millions",
+    "scale_divisor": 1000000.0,
+    "value_dtype": "float",
+    "seed": 4,
+    "state_filter": null,
+    "positive_only": true,
+    "n_train": 20,
+    "n_test": 10,
+    "counties_train": [
+      {
+        "state": "NM",
+        "county": "Lea",
+        "stcofips": "35025"
+      },
+      {
+        "state": "MS",
+        "county": "Leflore",
+        "stcofips": "28083"
+      },
+      {
+        "state": "NC",
+        "county": "Union",
+        "stcofips": "37179"
+      },
+      {
+        "state": "NE",
+        "county": "Wayne",
+        "stcofips": "31179"
+      },
+      {
+        "state": "KS",
+        "county": "Dickinson",
+        "stcofips": "20041"
+      },
+      {
+        "state": "NV",
+        "county": "Douglas",
+        "stcofips": "32005"
+      },
+      {
+        "state": "FL",
+        "county": "Liberty",
+        "stcofips": "12077"
+      },
+      {
+        "state": "IN",
+        "county": "Parke",
+        "stcofips": "18121"
+      },
+      {
+        "state": "NM",
+        "county": "De Baca",
+        "stcofips": "35011"
+      },
+      {
+        "state": "AR",
+        "county": "Cleveland",
+        "stcofips": "05025"
+      },
+      {
+        "state": "NC",
+        "county": "Johnston",
+        "stcofips": "37101"
+      },
+      {
+        "state": "KY",
+        "county": "Robertson",
+        "stcofips": "21201"
+      },
+      {
+        "state": "GA",
+        "county": "Gilmer",
+        "stcofips": "13123"
+      },
+      {
+        "state": "NY",
+        "county": "Richmond",
+        "stcofips": "36085"
+      },
+      {
+        "state": "MD",
+        "county": "Washington",
+        "stcofips": "24043"
+      },
+      {
+        "state": "KY",
+        "county": "Crittenden",
+        "stcofips": "21055"
+      },
+      {
+        "state": "MN",
+        "county": "Lincoln",
+        "stcofips": "27081"
+      },
+      {
+        "state": "AR",
+        "county": "Ouachita",
+        "stcofips": "05103"
+      },
+      {
+        "state": "MT",
+        "county": "Broadwater",
+        "stcofips": "30007"
+      },
+      {
+        "state": "NC",
+        "county": "Greene",
+        "stcofips": "37079"
+      }
+    ],
+    "counties_test": [
+      {
+        "state": "MI",
+        "county": "Emmet",
+        "stcofips": "26047"
+      },
+      {
+        "state": "NC",
+        "county": "Iredell",
+        "stcofips": "37097"
+      },
+      {
+        "state": "NY",
+        "county": "Queens",
+        "stcofips": "36081"
+      },
+      {
+        "state": "IA",
+        "county": "Scott",
+        "stcofips": "19163"
+      },
+      {
+        "state": "KS",
+        "county": "Pottawatomie",
+        "stcofips": "20149"
+      },
+      {
+        "state": "LA",
+        "county": "St. Tammany",
+        "stcofips": "22103"
+      },
+      {
+        "state": "CO",
+        "county": "Lincoln",
+        "stcofips": "08073"
+      },
+      {
+        "state": "IL",
+        "county": "Tazewell",
+        "stcofips": "17179"
+      },
+      {
+        "state": "ID",
+        "county": "Franklin",
+        "stcofips": "16041"
+      },
+      {
+        "state": "MO",
+        "county": "Sullivan",
+        "stcofips": "29211"
+      }
+    ],
+    "drawn_at": "2026-04-17",
+    "notes": "Sampled nationwide without a state filter. Heavy-tailed dollar losses typical of hydrological hazards."
+  }
+}

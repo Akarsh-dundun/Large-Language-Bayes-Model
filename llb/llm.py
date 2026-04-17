@@ -14,6 +14,7 @@ class LLMClient:
         timeout=120,
         max_retries=2,
         retry_backoff=2.0,
+        temperature=0.8,
     ):
         self.api_url = api_url
         self.api_key = api_key
@@ -23,13 +24,19 @@ class LLMClient:
         self.timeout = timeout
         self.max_retries = max_retries
         self.retry_backoff = retry_backoff
+        # Non-zero default so that different seeds actually produce different
+        # outputs. With temperature=0 and a seed, Ollama runs greedy decoding
+        # and every seed collapses to the same program. For the paper sweep we
+        # need sample diversity across the 10,000 valid codes per cell, which
+        # requires temperature > 0.
+        self.temperature = float(temperature)
 
-    def generate(self, prompt_or_messages):
+    def generate(self, prompt_or_messages, seed=None):
         headers = {"Content-Type": "application/json", **self.extra_headers}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
-        payload = self._build_payload(prompt_or_messages)
+        payload = self._build_payload(prompt_or_messages, seed=seed)
         attempts = int(self.max_retries) + 1
         last_exc = None
         for attempt in range(attempts):
@@ -69,24 +76,30 @@ class LLMClient:
 
         raise RuntimeError("LLM request failed after retries") from last_exc
 
-    def _build_payload(self, prompt_or_messages):
+    def _build_payload(self, prompt_or_messages, seed=None):
         mode = self._resolved_provider()
         prompt = _flatten_prompt(prompt_or_messages)
         messages = _coerce_messages(prompt_or_messages)
 
         if mode == "openai_responses":
             input_value = messages if messages is not None else prompt
-            return {
+            payload = {
                 "model": self.model or "gpt-4.1-mini",
                 "input": input_value,
             }
+            if seed is not None:
+                payload["seed"] = int(seed)
+            return payload
 
         if mode == "openai_chat":
             chat_messages = messages if messages is not None else [{"role": "user", "content": prompt}]
-            return {
+            payload = {
                 "model": self.model or "gpt-4.1-mini",
                 "messages": chat_messages,
             }
+            if seed is not None:
+                payload["seed"] = int(seed)
+            return payload
 
         if mode == "ollama_generate":
             payload = {
@@ -95,9 +108,13 @@ class LLMClient:
                 # Some reasoning-capable local models may return empty `response`
                 # when thinking is enabled; request direct final output when supported.
                 "think": False,
+                "options": {"temperature": self.temperature},
             }
             if self.model:
                 payload["model"] = self.model
+            if seed is not None:
+                payload["seed"] = int(seed)
+                payload["options"]["seed"] = int(seed)
             return payload
 
         payload = {"prompt": prompt}

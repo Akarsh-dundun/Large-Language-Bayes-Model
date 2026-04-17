@@ -1,0 +1,9 @@
+{
+  "name": "qwen25_coder",
+  "api_url": "http://127.0.0.1:11434/api/generate",
+  "api_key": null,
+  "api_model": "qwen2.5-coder:latest",
+  "llm_timeout": null,
+  "llm_max_retries": 2,
+  "llm_retry_backoff": 2.0
+}

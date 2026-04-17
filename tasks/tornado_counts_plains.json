@@ -1,0 +1,158 @@
+{
+  "name": "tornado_counts_plains",
+  "text": "I have the total number of recorded tornadoes in each of 20 counties in the US Great Plains. Each value is a nonnegative integer count accumulated over roughly three decades. Estimate the underlying tornado event rate per county.",
+  "data": {
+    "events": [
+      36,
+      56,
+      36,
+      7,
+      29,
+      34,
+      23,
+      13,
+      29,
+      43,
+      6,
+      45,
+      50,
+      6,
+      67,
+      29,
+      11,
+      29,
+      38,
+      11
+    ]
+  },
+  "test_data": null,
+  "targets": [
+    "rate"
+  ],
+  "true_latents": null,
+  "task_type": "estimation",
+  "metadata": {
+    "internet_seen": true,
+    "source": "FEMA National Risk Index v1.20 (Dec 2025)",
+    "attribute": "TRND_EVNTS",
+    "source_url": "https://services.arcgis.com/XG15cJAlne2vxtgt/arcgis/rest/services/National_Risk_Index_Counties/FeatureServer/0/query",
+    "units": "count of recorded tornadoes",
+    "scale_divisor": 1.0,
+    "value_dtype": "int",
+    "seed": 1,
+    "state_filter": [
+      "KS",
+      "OK",
+      "NE",
+      "TX"
+    ],
+    "positive_only": true,
+    "n_train": 20,
+    "n_test": 0,
+    "counties_train": [
+      {
+        "state": "NE",
+        "county": "Dawson",
+        "stcofips": "31047"
+      },
+      {
+        "state": "TX",
+        "county": "Donley",
+        "stcofips": "48129"
+      },
+      {
+        "state": "KS",
+        "county": "Cloud",
+        "stcofips": "20029"
+      },
+      {
+        "state": "NE",
+        "county": "Grant",
+        "stcofips": "31075"
+      },
+      {
+        "state": "KS",
+        "county": "Pottawatomie",
+        "stcofips": "20149"
+      },
+      {
+        "state": "TX",
+        "county": "Hopkins",
+        "stcofips": "48223"
+      },
+      {
+        "state": "OK",
+        "county": "Love",
+        "stcofips": "40085"
+      },
+      {
+        "state": "TX",
+        "county": "Sterling",
+        "stcofips": "48431"
+      },
+      {
+        "state": "KS",
+        "county": "Johnson",
+        "stcofips": "20091"
+      },
+      {
+        "state": "OK",
+        "county": "Ellis",
+        "stcofips": "40045"
+      },
+      {
+        "state": "TX",
+        "county": "Somervell",
+        "stcofips": "48425"
+      },
+      {
+        "state": "OK",
+        "county": "Pushmataha",
+        "stcofips": "40127"
+      },
+      {
+        "state": "TX",
+        "county": "Nueces",
+        "stcofips": "48355"
+      },
+      {
+        "state": "TX",
+        "county": "Llano",
+        "stcofips": "48299"
+      },
+      {
+        "state": "KS",
+        "county": "Cowley",
+        "stcofips": "20035"
+      },
+      {
+        "state": "TX",
+        "county": "Martin",
+        "stcofips": "48317"
+      },
+      {
+        "state": "NE",
+        "county": "Logan",
+        "stcofips": "31113"
+      },
+      {
+        "state": "OK",
+        "county": "Cotton",
+        "stcofips": "40033"
+      },
+      {
+        "state": "NE",
+        "county": "Fillmore",
+        "stcofips": "31059"
+      },
+      {
+        "state": "TX",
+        "county": "Blanco",
+        "stcofips": "48031"
+      }
+    ],
+    "counties_test": [],
+    "drawn_at": "2026-04-17",
+    "notes": "Counts are integer. Counties vary substantially in area, which induces overdispersion relative to a pooled Poisson."
+  }
+}

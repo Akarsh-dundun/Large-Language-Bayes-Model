@@ -9,6 +9,10 @@ Requires-Dist: requests>=2.31
 Requires-Dist: jax>=0.4.25
 Requires-Dist: jaxlib>=0.4.25
 Requires-Dist: numpyro>=0.14.0
+Requires-Dist: rich>=15.0.0
+Requires-Dist: matplotlib>=3.10.8
+Requires-Dist: pandas>=2.3.3
+Requires-Dist: scipy>=1.15.3
 
 # Large-Language-Bayes-Model
 
@@ -74,8 +78,6 @@ posterior = llb.infer(
         api_url=OLLAMA_URL,
         api_key=None,
         api_model=OLLAMA_MODEL,
-        llm_timeout=600,
-        llm_max_retries=3,
 )
 ```
 

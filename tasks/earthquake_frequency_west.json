@@ -1,0 +1,161 @@
+{
+  "name": "earthquake_frequency_west",
+  "text": "I have the annualized earthquake frequency, in events per year, for 20 counties in the western United States. Values are small positive numbers. Estimate the mean annual earthquake frequency.",
+  "data": {
+    "frequency_per_year": [
+      0.085339,
+      0.012761,
+      0.097465,
+      0.043673,
+      0.137339,
+      0.036156,
+      0.039169,
+      0.00557,
+      0.002628,
+      0.025332,
+      0.110681,
+      0.187396,
+      0.036325,
+      0.023443,
+      0.016682,
+      0.005441,
+      0.012719,
+      0.001419,
+      0.014152,
+      0.012807
+    ]
+  },
+  "test_data": null,
+  "targets": [
+    "mean_frequency"
+  ],
+  "true_latents": null,
+  "task_type": "estimation",
+  "metadata": {
+    "internet_seen": true,
+    "source": "FEMA National Risk Index v1.20 (Dec 2025)",
+    "attribute": "ERQK_AFREQ",
+    "source_url": "https://services.arcgis.com/XG15cJAlne2vxtgt/arcgis/rest/services/National_Risk_Index_Counties/FeatureServer/0/query",
+    "units": "events per year",
+    "scale_divisor": 1.0,
+    "value_dtype": "float",
+    "seed": 2,
+    "state_filter": [
+      "CA",
+      "NV",
+      "OR",
+      "WA",
+      "UT",
+      "ID",
+      "AK"
+    ],
+    "positive_only": true,
+    "n_train": 20,
+    "n_test": 0,
+    "counties_train": [
+      {
+        "state": "CA",
+        "county": "Lake",
+        "stcofips": "06033"
+      },
+      {
+        "state": "UT",
+        "county": "Iron",
+        "stcofips": "49021"
+      },
+      {
+        "state": "CA",
+        "county": "Marin",
+        "stcofips": "06041"
+      },
+      {
+        "state": "CA",
+        "county": "Plumas",
+        "stcofips": "06063"
+      },
+      {
+        "state": "CA",
+        "county": "San Mateo",
+        "stcofips": "06081"
+      },
+      {
+        "state": "WA",
+        "county": "Snohomish",
+        "stcofips": "53061"
+      },
+      {
+        "state": "WA",
+        "county": "Clallam",
+        "stcofips": "53009"
+      },
+      {
+        "state": "AK",
+        "county": "Petersburg",
+        "stcofips": "02195"
+      },
+      {
+        "state": "UT",
+        "county": "Grand",
+        "stcofips": "49019"
+      },
+      {
+        "state": "NV",
+        "county": "Lander",
+        "stcofips": "32015"
+      },
+      {
+        "state": "CA",
+        "county": "San Luis Obispo",
+        "stcofips": "06079"
+      },
+      {
+        "state": "AK",
+        "county": "Kenai Peninsula",
+        "stcofips": "02122"
+      },
+      {
+        "state": "CA",
+        "county": "Tehama",
+        "stcofips": "06103"
+      },
+      {
+        "state": "NV",
+        "county": "Storey",
+        "stcofips": "32029"
+      },
+      {
+        "state": "OR",
+        "county": "Klamath",
+        "stcofips": "41035"
+      },
+      {
+        "state": "OR",
+        "county": "Umatilla",
+        "stcofips": "41059"
+      },
+      {
+        "state": "AK",
+        "county": "Skagway",
+        "stcofips": "02230"
+      },
+      {
+        "state": "ID",
+        "county": "Boundary",
+        "stcofips": "16021"
+      },
+      {
+        "state": "UT",
+        "county": "Millard",
+        "stcofips": "49027"
+      },
+      {
+        "state": "ID",
+        "county": "Franklin",
+        "stcofips": "16041"
+      }
+    ],
+    "counties_test": [],
+    "drawn_at": "2026-04-17",
+    "notes": "Values are continuous positive rates derived from historical seismicity."
+  }
+}

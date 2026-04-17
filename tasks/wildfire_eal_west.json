@@ -1,0 +1,229 @@
+{
+  "name": "wildfire_eal_west",
+  "text": "I have the expected annual wildfire-related economic losses, in millions of US dollars, for 20 counties in the western United States. Losses are strictly positive and span several orders of magnitude. Estimate the underlying loss distribution and predict losses for 10 held-out counties.",
+  "data": {
+    "losses_musd": [
+      7.377311364046419,
+      27.25798395873756,
+      1.7478236407893022,
+      0.1487649915641824,
+      0.018989418788773946,
+      11.817934249006942,
+      25.736383121765602,
+      0.02973256642674127,
+      0.17889335823526958,
+      0.10238960217513238,
+      8.231363688254795,
+      1.1985029524103847,
+      0.02993130523020372,
+      13.011174077680035,
+      50.10780431318488,
+      0.14041731424018541,
+      0.9882474766711393,
+      155.19181203949063,
+      0.1546826676920528,
+      28.70745990539301
+    ]
+  },
+  "test_data": {
+    "losses_musd": [
+      0.39020633045476466,
+      25.175654399153117,
+      1.0532708830777577,
+      16.831008540886923,
+      2.1552336432617194,
+      11.552616079311521,
+      1.2636804166043354,
+      1.0383357124388986,
+      0.011709726987982451,
+      5.199013724240502
+    ]
+  },
+  "targets": [
+    "median_loss"
+  ],
+  "true_latents": null,
+  "task_type": "prediction",
+  "metadata": {
+    "internet_seen": true,
+    "source": "FEMA National Risk Index v1.20 (Dec 2025)",
+    "attribute": "WFIR_EALT",
+    "source_url": "https://services.arcgis.com/XG15cJAlne2vxtgt/arcgis/rest/services/National_Risk_Index_Counties/FeatureServer/0/query",
+    "units": "USD millions",
+    "scale_divisor": 1000000.0,
+    "value_dtype": "float",
+    "seed": 3,
+    "state_filter": [
+      "CA",
+      "OR",
+      "WA",
+      "ID",
+      "MT",
+      "NV",
+      "AZ",
+      "NM",
+      "UT",
+      "CO",
+      "WY"
+    ],
+    "positive_only": true,
+    "n_train": 20,
+    "n_test": 10,
+    "counties_train": [
+      {
+        "state": "NV",
+        "county": "Lyon",
+        "stcofips": "32019"
+      },
+      {
+        "state": "CA",
+        "county": "Tuolumne",
+        "stcofips": "06109"
+      },
+      {
+        "state": "ID",
+        "county": "Nez Perce",
+        "stcofips": "16069"
+      },
+      {
+        "state": "ID",
+        "county": "Shoshone",
+        "stcofips": "16079"
+      },
+      {
+        "state": "CO",
+        "county": "Sedgwick",
+        "stcofips": "08115"
+      },
+      {
+        "state": "NM",
+        "county": "Otero",
+        "stcofips": "35035"
+      },
+      {
+        "state": "CO",
+        "county": "Douglas",
+        "stcofips": "08035"
+      },
+      {
+        "state": "MT",
+        "county": "Daniels",
+        "stcofips": "30019"
+      },
+      {
+        "state": "WA",
+        "county": "Whitman",
+        "stcofips": "53075"
+      },
+      {
+        "state": "MT",
+        "county": "Blaine",
+        "stcofips": "30005"
+      },
+      {
+        "state": "CA",
+        "county": "Mendocino",
+        "stcofips": "06045"
+      },
+      {
+        "state": "ID",
+        "county": "Fremont",
+        "stcofips": "16043"
+      },
+      {
+        "state": "CO",
+        "county": "Kit Carson",
+        "stcofips": "08063"
+      },
+      {
+        "state": "OR",
+        "county": "Deschutes",
+        "stcofips": "41017"
+      },
+      {
+        "state": "CA",
+        "county": "Ventura",
+        "stcofips": "06111"
+      },
+      {
+        "state": "MT",
+        "county": "Meagher",
+        "stcofips": "30059"
+      },
+      {
+        "state": "CA",
+        "county": "Yolo",
+        "stcofips": "06113"
+      },
+      {
+        "state": "CA",
+        "county": "Los Angeles",
+        "stcofips": "06037"
+      },
+      {
+        "state": "OR",
+        "county": "Multnomah",
+        "stcofips": "41051"
+      },
+      {
+        "state": "AZ",
+        "county": "Yavapai",
+        "stcofips": "04025"
+      }
+    ],
+    "counties_test": [
+      {
+        "state": "UT",
+        "county": "Rich",
+        "stcofips": "49033"
+      },
+      {
+        "state": "CA",
+        "county": "Placer",
+        "stcofips": "06061"
+      },
+      {
+        "state": "WY",
+        "county": "Sublette",
+        "stcofips": "56035"
+      },
+      {
+        "state": "CA",
+        "county": "Sonoma",
+        "stcofips": "06097"
+      },
+      {
+        "state": "NM",
+        "county": "Sandoval",
+        "stcofips": "35043"
+      },
+      {
+        "state": "CA",
+        "county": "Alameda",
+        "stcofips": "06001"
+      },
+      {
+        "state": "MT",
+        "county": "Stillwater",
+        "stcofips": "30095"
+      },
+      {
+        "state": "OR",
+        "county": "Lake",
+        "stcofips": "41037"
+      },
+      {
+        "state": "NV",
+        "county": "Esmeralda",
+        "stcofips": "32009"
+      },
+      {
+        "state": "WA",
+        "county": "Ferry",
+        "stcofips": "53019"
+      }
+    ],
+    "drawn_at": "2026-04-17",
+    "notes": "IID assumption is approximate. Counties differ in vegetation, building stock, and historical fire activity."
+  }
+}

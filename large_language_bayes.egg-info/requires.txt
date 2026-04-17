@@ -3,3 +3,7 @@ requests>=2.31
 jax>=0.4.25
 jaxlib>=0.4.25
 numpyro>=0.14.0
+rich>=15.0.0
+matplotlib>=3.10.8
+pandas>=2.3.3
+scipy>=1.15.3
