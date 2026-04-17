@@ -64,15 +64,22 @@ def _estimate_loo_true(
     num_inner, num_warmup, num_samples,
     rng_seed, min_std, fallback_log_bound
 ):
+    from tqdm.auto import tqdm
+
     n_datapoints = _get_num_datapoints(data)
     loo_log_liks = []  # Keep the variable name
     elbo_histories = []
 
-    print(f"Computing TRUE LOO-ELBO for {n_datapoints} datapoints (this will take a while)...")
+    loo_bar = tqdm(
+        range(n_datapoints),
+        desc="  true-LOO",
+        unit="pt",
+        leave=False,
+        dynamic_ncols=True,
+    )
 
-    for i in range(n_datapoints):
-        print(f"  LOO for datapoint {i+1}/{n_datapoints}...", end=" ")
-
+    for i in loo_bar:
+        loo_bar.set_postfix_str(f"pt {i+1}/{n_datapoints}", refresh=True)
         try:
             loo_data = _create_loo_dataset(data, i)
 
@@ -140,16 +147,19 @@ def _estimate_loo_true(
                 elbo_i = np.mean(elbo_estimates)
                 loo_log_liks.append(elbo_i)
                 elbo_histories.append(elbo_estimates)
-                print(f"ELBO = {elbo_i:.4f} (±{np.std(elbo_estimates):.4f})")
+                loo_bar.set_postfix_str(
+                    f"pt {i+1}/{n_datapoints} ELBO={elbo_i:.3f}", refresh=True
+                )
             else:
                 loo_log_liks.append(fallback_log_bound)
                 elbo_histories.append([])
-                print("FAILED (using fallback)")
+                loo_bar.set_postfix_str(f"pt {i+1}/{n_datapoints} FALLBACK", refresh=True)
 
         except Exception as e:
-            print(f"ERROR: {e}")
+            loo_bar.write(f"  LOO pt {i+1}/{n_datapoints} ERROR: {e}")
             loo_log_liks.append(fallback_log_bound)
             elbo_histories.append([])
+    loo_bar.close()
 
     return {
         "loo_log_liks": np.array(loo_log_liks, dtype=np.float64),  # ← CHANGED FROM loo_elbos

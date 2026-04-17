@@ -1,5 +1,6 @@
 import numpy as np
 from scipy.optimize import minimize
+from tqdm.auto import tqdm
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
@@ -8,7 +9,7 @@ from rich import box
 
 from .mcmc_log import estimate_log_marginal_iw, run_inference, estimate_loo_log_likelihoods, _get_num_datapoints
 from .llm import LLMClient
-from .model_generator import generate_models_with_diagnostics
+from .model_generator import generate_models_with_diagnostics, load_pregenerated_codes
 
 # Initialize rich console
 console = Console()
@@ -244,29 +245,44 @@ def infer(
     loo_num_samples=100,    # NEW
     use_true_loo=True,      # NEW FLAG
     loo_lambda_reg=0.01,           # NEW: regularization strength
-    loo_kl_reference='uniform', 
+    loo_kl_reference='uniform',
     verbose=False,
     auto_print_result=True,
+    preloaded_codes_dir=None,
+    preloaded_codes_field="canonical_code",
 ):
     base_seed = int(random_seed) if random_seed is not None else int(np.random.SeedSequence().generate_state(1)[0])
 
-    llm_kwargs = {
-        "api_url": api_url,
-        "api_key": api_key,
-        "model": api_model,
-        "max_retries": llm_max_retries,
-        "retry_backoff": llm_retry_backoff,
-    }
-    if llm_timeout is not None:
-        llm_kwargs["timeout"] = llm_timeout
-    llm = LLMClient(**llm_kwargs)
-    model_codes, gen_diag = generate_models_with_diagnostics(
-        llm,
-        text=text,
-        data=data,
-        targets=targets,
-        n_models=n_models,
-    )
+    if preloaded_codes_dir is not None:
+        llm = None
+        model_codes, gen_diag = load_pregenerated_codes(
+            preloaded_codes_dir,
+            n_models=n_models,
+            field=preloaded_codes_field,
+        )
+        if verbose:
+            console.print(
+                f"[green]Loaded {len(model_codes)} pre-generated codes from "
+                f"{preloaded_codes_dir}[/green]"
+            )
+    else:
+        llm_kwargs = {
+            "api_url": api_url,
+            "api_key": api_key,
+            "model": api_model,
+            "max_retries": llm_max_retries,
+            "retry_backoff": llm_retry_backoff,
+        }
+        if llm_timeout is not None:
+            llm_kwargs["timeout"] = llm_timeout
+        llm = LLMClient(**llm_kwargs)
+        model_codes, gen_diag = generate_models_with_diagnostics(
+            llm,
+            text=text,
+            data=data,
+            targets=targets,
+            n_models=n_models,
+        )
     #print(model_codes)
     generated_models = len(model_codes)
     all_generated_codes = model_codes.copy()
@@ -292,9 +308,18 @@ def infer(
         failed_local = []
         auto_targets_local = None
 
-        for local_idx, code in enumerate(codes):
+        iterator = tqdm(
+            enumerate(codes),
+            total=len(codes),
+            desc="inference (NUTS+IWAE+LOO)",
+            unit="model",
+            leave=False,
+            dynamic_ncols=True,
+        )
+        for local_idx, code in iterator:
             idx = start_index + local_idx
             try:
+                iterator.set_postfix_str(f"idx={idx} phase=NUTS", refresh=True)
                 infer_out = run_inference(
                     code=code,
                     data=data,
@@ -313,6 +338,7 @@ def infer(
 
                 # Always compute marginal likelihood
                 try:
+                    iterator.set_postfix_str(f"idx={idx} phase=IWAE", refresh=True)
                     log_bound = estimate_log_marginal_iw(
                         model=infer_out["model"],
                         data=data,
@@ -329,6 +355,7 @@ def infer(
 
                 # Always compute LOO with diagnostics
                 try:
+                    iterator.set_postfix_str(f"idx={idx} phase=LOO", refresh=True)
                     loo_result = estimate_loo_log_likelihoods(
                         model=infer_out["model"],
                         data=data,
@@ -382,7 +409,7 @@ def infer(
 
     valid, failed_models, auto_targets = _evaluate_candidates(model_codes, start_index=0)
 
-    if not valid:
+    if not valid and llm is not None:
         extra_goal = int(n_models)
         if extra_goal > 0:
             extra_codes_raw, extra_gen_diag = generate_models_with_diagnostics(

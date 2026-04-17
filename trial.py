@@ -1,223 +1,318 @@
-import llb
+"""Driver for the LLB stacking experiments.
+
+This script replaces the old hard-coded coin-flip trial with a task- and
+LLM-parameterised runner that can either (a) hit a live LLM via Ollama or
+(b) consume pre-generated NumPyro programs produced on the ``model_gen``
+branch (Stage A of the two-stage paper pipeline). See
+``experiments_progress.md`` for where those artifacts live.
+
+Examples
+--------
+
+Preload mode (no LLM calls, uses codes already on scratch)::
+
+    python trial.py --task tasks/tornado_counts_plains.json \\
+                    --llm-config llm_configs/qwen25_coder.json \\
+                    --n-models 5 \\
+                    --preload-codes-dir /scratch3/workspace/edmondcunnin_umass_edu-siple/paper_results/tornado_counts_plains/qwen25_coder/codes
+
+Live LLM mode (original behaviour)::
+
+    python trial.py --task tasks/coin_flip.json \\
+                    --llm-config llm_configs/qwen25_coder.json \\
+                    --n-models 10
+
+Sweep every (task, LLM) cell that has codes on scratch::
+
+    LLB_PAPER_RESULTS_ROOT=/scratch3/workspace/edmondcunnin_umass_edu-siple/paper_results \\
+    python trial.py --sweep-paper --n-models 100
+"""
+
+from __future__ import annotations
+
+import argparse
 import json
+import os
 import time
 from pathlib import Path
+
 import numpy as np
+from tqdm.auto import tqdm
 
-# Experiment configuration
-text = "I have a bunch of coin flips. What's the bias?"
-data = {"flips": [0, 1, 0, 1, 1, 0]}
-targets = ["true_bias"]
+import llb
 
-EXPERIMENTS = [
-    {
-        "name": "qwen2.5-coder",
-        "api_url": "http://localhost:11434/api/generate",
-        "api_key": None,
-        "api_model": "qwen2.5-coder:latest",
-    },
-    {
-        "name": "llama3.2",  # CHANGE THIS TO YOUR SECOND MODEL
-        "api_url": "http://localhost:11434/api/generate",
-        "api_key": None,
-        "api_model": "llama3.2:latest",  # CHANGE THIS
-    },
-]
 
-N_MODELS_LIST = [10, 20]
-MCMC_WARMUP = 500
-MCMC_SAMPLES = 1000
+DEFAULT_SCRATCH_ROOT = "/scratch3/workspace/edmondcunnin_umass_edu-siple/paper_results"
+RESULTS_DIR = Path("experiment_results_anant")
 
-# Create results directory
-results_dir = Path("experiment_results")
-results_dir.mkdir(exist_ok=True)
+
+def parse_args():
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    p.add_argument("--task", type=Path, help="Path to a task JSON (tasks/*.json)")
+    p.add_argument("--llm-config", type=Path, help="Path to an LLM config (llm_configs/*.json)")
+    p.add_argument(
+        "--n-models",
+        type=str,
+        default="10,20",
+        help="Comma-separated model-count sweep (e.g. '10,50,200').",
+    )
+    p.add_argument(
+        "--preload-codes-dir",
+        type=Path,
+        default=None,
+        help="If set, load pre-generated codes from this directory instead of calling the LLM.",
+    )
+    p.add_argument(
+        "--paper-results-root",
+        type=Path,
+        default=Path(os.environ.get("LLB_PAPER_RESULTS_ROOT", DEFAULT_SCRATCH_ROOT)),
+        help=(
+            "Root of the paper_results tree on scratch. Used to auto-derive "
+            "--preload-codes-dir (<root>/<task_stem>/<llm_name>/codes) when not given, "
+            "and to enumerate cells in --sweep-paper."
+        ),
+    )
+    p.add_argument(
+        "--sweep-paper",
+        action="store_true",
+        help=(
+            "Iterate every (task, llm) cell under --paper-results-root that has "
+            "at least one code_*.code.json file. Requires --paper-results-root."
+        ),
+    )
+    p.add_argument("--mcmc-warmup", type=int, default=500)
+    p.add_argument("--mcmc-samples", type=int, default=1000)
+    p.add_argument("--loo-warmup", type=int, default=50)
+    p.add_argument("--loo-samples", type=int, default=100)
+    p.add_argument("--verbose", action="store_true")
+    return p.parse_args()
+
+
+def load_task(path: Path) -> dict:
+    with open(path) as f:
+        task = json.load(f)
+    missing = [k for k in ("text", "data", "targets") if k not in task]
+    if missing:
+        raise ValueError(f"task {path} missing required keys: {missing}")
+    return task
+
+
+def load_llm_config(path: Path) -> dict:
+    with open(path) as f:
+        return json.load(f)
+
 
 def serialize_result(result):
-    """Convert numpy arrays to lists for JSON serialization."""
-    serialized = {}
-    for key, value in result.items():
-        if isinstance(value, dict):
-            # Handle nested dicts (epistemic_uncertainty_*, diagnostics)
-            serialized[key] = {
-                k: v.tolist() if isinstance(v, np.ndarray) else float(v) if isinstance(v, (np.float32, np.float64, np.int64)) else v
-                for k, v in value.items()
-            }
-        elif isinstance(value, np.ndarray):
-            serialized[key] = value.tolist()
-        elif isinstance(value, (np.float32, np.float64, np.int64, np.int32)):
-            serialized[key] = float(value) if isinstance(value, (np.float32, np.float64)) else int(value)
-        else:
-            serialized[key] = value
-    return serialized
+    """Convert numpy arrays to JSON-safe python types."""
+    def _convert(v):
+        if isinstance(v, np.ndarray):
+            return v.tolist()
+        if isinstance(v, (np.floating,)):
+            return float(v)
+        if isinstance(v, (np.integer,)):
+            return int(v)
+        if isinstance(v, dict):
+            return {k: _convert(x) for k, x in v.items()}
+        if isinstance(v, (list, tuple)):
+            return [_convert(x) for x in v]
+        return v
 
-def run_experiment(llm_config, n_models):
-    """Run a single experiment and return results."""
-    print(f"\n{'='*80}")
-    print(f"Running: {llm_config['name']} with {n_models} models")
-    print(f"{'='*80}\n")
-    
-    start_time = time.time()
-    
+    return {k: _convert(v) for k, v in result.items()}
+
+
+def extract_metrics(result, target, llm_name, n_models_req, elapsed):
+    diag = result["diagnostics"]
+    w_uni = np.asarray(result["weights_uniform"])
+    w_bma = np.asarray(result["weights_bma"])
+    w_loo = np.asarray(result["weights_loo"])
+
+    def _entropy(w):
+        return float(-np.sum(w * np.log(w + 1e-10)))
+
+    def _ess(w):
+        return float(1.0 / np.sum(w ** 2))
+
+    return {
+        "llm_name": llm_name,
+        "n_models_requested": int(n_models_req),
+        "elapsed_time_seconds": float(elapsed),
+        "n_models_generated": int(diag.get("generated_models", 0)),
+        "n_models_deduplicated": int(diag.get("deduplicated_models", 0)),
+        "n_models_invalid_syntax": int(diag.get("invalid_models_syntax_or_parsing", 0)),
+        "n_models_generation_failures": int(diag.get("generation_request_failures", 0)),
+        "n_models_missing_targets": int(diag.get("missing_targets_failures", 0)),
+        "n_models_compile_failures": int(diag.get("compile_failures", 0)),
+        "n_models_inference_failures": int(diag.get("inference_failures", 0)),
+        "n_models_shape_mismatch": int(diag.get("shape_mismatch_drops", 0)),
+        "n_models_nonfinite_log_bound": int(diag.get("nonfinite_log_bound_drops", 0)),
+        "n_models_valid_final": int(diag.get("valid_models_final", 0)),
+        "valid_model_rate": diag.get("valid_models_final", 0) / max(1, n_models_req),
+        "epistemic_var_uniform": float(result["epistemic_uncertainty_uniform"][target]),
+        "epistemic_var_bma": float(result["epistemic_uncertainty_bma"][target]),
+        "epistemic_var_loo": float(result["epistemic_uncertainty_loo"][target]),
+        "weights_uniform": w_uni.tolist(),
+        "weights_bma": w_bma.tolist(),
+        "weights_loo": w_loo.tolist(),
+        "entropy_uniform": _entropy(w_uni),
+        "entropy_bma": _entropy(w_bma),
+        "entropy_loo": _entropy(w_loo),
+        "ess_uniform": _ess(w_uni),
+        "ess_bma": _ess(w_bma),
+        "ess_loo": _ess(w_loo),
+        "l1_distance_loo_bma": float(np.sum(np.abs(w_loo - w_bma))),
+        "posterior_mean_uniform": float(np.mean(result["posterior_flat"][target])),
+        "posterior_mean_bma": float(np.mean(result["posterior_bma"][target])),
+        "posterior_mean_loo": float(np.mean(result["posterior_loo"][target])),
+        "final_loo_objective": float(result["final_loo_objective"]),
+        "log_marginal_per_model": result["log_marginal_per_model"],
+    }
+
+
+def run_one(task: dict, task_name: str, llm_cfg: dict, n_models: int, args, outer_bar=None) -> dict:
+    primary_target = task["targets"][0] if task["targets"] else None
+
+    preload_dir = args.preload_codes_dir
+    if preload_dir is None and not args.sweep_paper:
+        candidate = args.paper_results_root / task_name / llm_cfg["name"] / "codes"
+        if candidate.is_dir() and any(candidate.glob("code_*.code.json")):
+            preload_dir = candidate
+
+    label = f"{task_name}/{llm_cfg['name']} n={n_models} [{'preload' if preload_dir else 'live-llm'}]"
+    if outer_bar is not None:
+        outer_bar.set_description(label)
+        outer_bar.write(f"\n=== {label} ===" + (f" preload={preload_dir}" if preload_dir else ""))
+    else:
+        print("\n" + "=" * 80)
+        print(f"Running: {label}")
+        if preload_dir:
+            print(f"  preload: {preload_dir}")
+        print("=" * 80)
+
+    start = time.time()
     try:
         result = llb.infer(
-            text,
-            data,
-            targets,
-            api_url=llm_config["api_url"],
-            api_key=llm_config["api_key"],
-            api_model=llm_config["api_model"],
+            task["text"],
+            task["data"],
+            task["targets"],
+            api_url=llm_cfg.get("api_url"),
+            api_key=llm_cfg.get("api_key"),
+            api_model=llm_cfg.get("api_model"),
             n_models=n_models,
-            verbose=True,
-            mcmc_num_warmup=MCMC_WARMUP,
-            mcmc_num_samples=MCMC_SAMPLES,
-            loo_num_warmup=50,          # Reduced for LOO
-            loo_num_samples=100,        # Reduced for LOO
-            use_true_loo=True, 
+            verbose=args.verbose,
+            mcmc_num_warmup=args.mcmc_warmup,
+            mcmc_num_samples=args.mcmc_samples,
+            loo_num_warmup=args.loo_warmup,
+            loo_num_samples=args.loo_samples,
+            use_true_loo=True,
+            preloaded_codes_dir=str(preload_dir) if preload_dir else None,
         )
-        
-        elapsed_time = time.time() - start_time
-        
-        # Extract diagnostics
-        diag = result["diagnostics"]
-        
-        # Extract key metrics
-        metrics = {
-            "llm_name": llm_config["name"],
-            "n_models_requested": n_models,
-            "elapsed_time_seconds": elapsed_time,
-            
-            # Model generation diagnostics
-            "n_models_generated": diag["generated_models"],
-            "n_models_deduplicated": diag["deduplicated_models"],
-            "n_models_invalid_syntax": diag["invalid_models_syntax_or_parsing"],
-            "n_models_generation_failures": diag["generation_request_failures"],
-            "n_models_missing_targets": diag["missing_targets_failures"],
-            "n_models_compile_failures": diag["compile_failures"],
-            "n_models_inference_failures": diag["inference_failures"],
-            "n_models_shape_mismatch": diag["shape_mismatch_drops"],
-            "n_models_nonfinite_log_bound": diag["nonfinite_log_bound_drops"],
-            "n_models_valid_final": diag["valid_models_final"],
-            
-            # Success rate
-            "valid_model_rate": diag["valid_models_final"] / n_models if n_models > 0 else 0,
-            
-            # Epistemic uncertainties
-            "epistemic_var_uniform": float(result["epistemic_uncertainty_uniform"]["true_bias"]),
-            "epistemic_var_bma": float(result["epistemic_uncertainty_bma"]["true_bias"]),
-            "epistemic_var_loo": float(result["epistemic_uncertainty_loo"]["true_bias"]),
-            
-            # Weights
-            "weights_uniform": result["weights_uniform"].tolist(),
-            "weights_bma": result["weights_bma"].tolist(),
-            "weights_loo": result["weights_loo"].tolist(),
-            
-            # Weight statistics
-            "entropy_uniform": float(-np.sum(result["weights_uniform"] * np.log(result["weights_uniform"] + 1e-10))),
-            "entropy_bma": float(-np.sum(result["weights_bma"] * np.log(result["weights_bma"] + 1e-10))),
-            "entropy_loo": float(-np.sum(result["weights_loo"] * np.log(result["weights_loo"] + 1e-10))),
-            
-            "ess_uniform": float(1 / np.sum(result["weights_uniform"] ** 2)),
-            "ess_bma": float(1 / np.sum(result["weights_bma"] ** 2)),
-            "ess_loo": float(1 / np.sum(result["weights_loo"] ** 2)),
-            
-            "l1_distance_loo_bma": float(np.sum(np.abs(result["weights_loo"] - result["weights_bma"]))),
-            
-            # Posterior means
-            "posterior_mean_uniform": float(np.mean(result["posterior_flat"]["true_bias"])),
-            "posterior_mean_bma": float(np.mean(result["posterior_bma"]["true_bias"])),
-            "posterior_mean_loo": float(np.mean(result["posterior_loo"]["true_bias"])),
-
-            "final_loo_objective": float(result["final_loo_objective"]),
-            "log_marginal_per_model": result["log_marginal_per_model"],
-        }
-        
-        print(f"\n✓ Completed in {elapsed_time:.1f}s")
-        print(f"  Models: Requested={n_models}, Generated={diag['generated_models']}, Valid={diag['valid_models_final']} ({metrics['valid_model_rate']:.1%})")
-        print(f"  Failures: Syntax={diag['invalid_models_syntax_or_parsing']}, Compile={diag['compile_failures']}, Inference={diag['inference_failures']}")
-        print(f"  Epistemic Var: Uniform={metrics['epistemic_var_uniform']:.6f}, BMA={metrics['epistemic_var_bma']:.6f}, LOO={metrics['epistemic_var_loo']:.6f}")
-        print(f"  ESS: Uniform={metrics['ess_uniform']:.2f}, BMA={metrics['ess_bma']:.2f}, LOO={metrics['ess_loo']:.2f}")
-        
+        elapsed = time.time() - start
+        metrics = extract_metrics(result, primary_target, llm_cfg["name"], n_models, elapsed)
         return {
             "success": True,
+            "task": task_name,
+            "llm_name": llm_cfg["name"],
+            "n_models": n_models,
+            "preload_codes_dir": str(preload_dir) if preload_dir else None,
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
             "metrics": metrics,
             "full_result": serialize_result(result),
             "model_codes": result.get("model_codes", []),
         }
-        
     except Exception as e:
-        elapsed_time = time.time() - start_time
-        print(f"\n✗ Failed after {elapsed_time:.1f}s: {e}")
-        
+        elapsed = time.time() - start
+        print(f"\n[FAIL] {task_name}/{llm_cfg['name']} n={n_models}: {e}")
         return {
             "success": False,
+            "task": task_name,
+            "llm_name": llm_cfg["name"],
+            "n_models": n_models,
+            "preload_codes_dir": str(preload_dir) if preload_dir else None,
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
             "error": str(e),
-            "elapsed_time_seconds": elapsed_time,
+            "elapsed_time_seconds": elapsed,
         }
 
-# Main experiment loop
-all_results = []
 
-for llm_config in EXPERIMENTS:
-    for n_models in N_MODELS_LIST:
-        # Run experiment
-        result = run_experiment(llm_config, n_models)
-        
-        # Add metadata
-        result["llm_name"] = llm_config["name"]
-        result["n_models"] = n_models
-        result["timestamp"] = time.strftime("%Y-%m-%d %H:%M:%S")
-        
-        # Store result
-        all_results.append(result)
-        
-        # Save intermediate results after each run
-        output_file = results_dir / f"results_{llm_config['name']}_n{n_models}.json"
-        with open(output_file, "w") as f:
-            json.dump(result, f, indent=2)
-        print(f"  Saved to: {output_file}")
+def discover_sweep_cells(root: Path):
+    cells = []
+    if not root.is_dir():
+        return cells
+    task_dir = Path("tasks")
+    llm_dir = Path("llm_configs")
+    task_map = {p.stem: p for p in task_dir.glob("*.json")}
+    llm_map = {p.stem: p for p in llm_dir.glob("*.json")}
+    for task_name in sorted(task_map):
+        for llm_name in sorted(llm_map):
+            codes = root / task_name / llm_name / "codes"
+            if codes.is_dir() and any(codes.glob("code_*.code.json")):
+                cells.append((task_name, task_map[task_name], llm_name, llm_map[llm_name], codes))
+    return cells
 
-        models_gen = result['model_codes']
-        output_model_file = results_dir / f"models_{llm_config['name']}_n{n_models}.json"
-        with open(output_model_file, "w") as f:
-            json.dump(result, f, indent=2)
-        print(f"  Saved to: {output_model_file}")
 
-# Save combined results
-combined_file = results_dir / "all_results.json"
-with open(combined_file, "w") as f:
-    json.dump(all_results, f, indent=2)
+def main():
+    args = parse_args()
+    n_models_list = [int(n) for n in str(args.n_models).split(",") if n.strip()]
+    RESULTS_DIR.mkdir(exist_ok=True, parents=True)
 
-print(f"\n{'='*80}")
-print(f"All experiments complete! Results saved to: {combined_file}")
-print(f"{'='*80}")
-
-# Print summary table
-print("\n" + "="*120)
-print("SUMMARY TABLE")
-print("="*120)
-print(f"{'LLM':<20} {'Req':<5} {'Gen':<5} {'Valid':<5} {'Rate':<7} {'Time(s)':<8} {'Epi_Uni':<10} {'Epi_BMA':<10} {'Epi_LOO':<10} {'L1':<8}")
-print("-"*120)
-
-for r in all_results:
-    if r["success"]:
-        m = r["metrics"]
-        print(f"{r['llm_name']:<20} {m['n_models_requested']:<5} {m['n_models_generated']:<5} {m['n_models_valid_final']:<5} "
-              f"{m['valid_model_rate']:<7.1%} {m['elapsed_time_seconds']:<8.1f} "
-              f"{m['epistemic_var_uniform']:<10.6f} {m['epistemic_var_bma']:<10.6f} "
-              f"{m['epistemic_var_loo']:<10.6f} {m['l1_distance_loo_bma']:<8.4f}")
+    jobs = []  # list of (task_dict, task_name, llm_cfg)
+    if args.sweep_paper:
+        cells = discover_sweep_cells(args.paper_results_root)
+        if not cells:
+            raise SystemExit(f"No populated cells under {args.paper_results_root}")
+        print(f"Sweep-paper: {len(cells)} (task, llm) cells")
+        for task_name, task_path, llm_name, llm_path, codes_dir in cells:
+            task = load_task(task_path)
+            llm_cfg = load_llm_config(llm_path)
+            jobs.append((task, task_name, llm_cfg))
     else:
-        print(f"{r['llm_name']:<20} {r['n_models']:<5} FAILED: {r['error']}")
+        if not args.task or not args.llm_config:
+            raise SystemExit("Provide --task and --llm-config, or use --sweep-paper")
+        task = load_task(args.task)
+        task_name = args.task.stem
+        llm_cfg = load_llm_config(args.llm_config)
+        jobs.append((task, task_name, llm_cfg))
 
-print("\n" + "="*120)
-print("FAILURE BREAKDOWN")
-print("="*120)
-print(f"{'LLM':<20} {'N':<5} {'Syntax':<8} {'GenFail':<8} {'Compile':<8} {'Infer':<8} {'Shape':<8} {'Dedup':<8}")
-print("-"*120)
+    all_results = []
+    total_runs = len(jobs) * len(n_models_list)
+    outer_bar = tqdm(
+        total=total_runs,
+        desc="runs",
+        unit="run",
+        dynamic_ncols=True,
+        position=0,
+    )
+    for task, task_name, llm_cfg in jobs:
+        for n_models in n_models_list:
+            result = run_one(task, task_name, llm_cfg, n_models, args, outer_bar=outer_bar)
+            all_results.append(result)
+            out_path = RESULTS_DIR / f"results_{task_name}_{llm_cfg['name']}_n{n_models}.json"
+            with open(out_path, "w") as f:
+                json.dump(result, f, indent=2)
+            outer_bar.write(f"  saved: {out_path}")
+            outer_bar.update(1)
+    outer_bar.close()
 
-for r in all_results:
-    if r["success"]:
-        m = r["metrics"]
-        print(f"{r['llm_name']:<20} {m['n_models_requested']:<5} "
-              f"{m['n_models_invalid_syntax']:<8} {m['n_models_generation_failures']:<8} "
-              f"{m['n_models_compile_failures']:<8} {m['n_models_inference_failures']:<8} "
-              f"{m['n_models_shape_mismatch']:<8} {m['n_models_deduplicated']:<8}")
+    summary_path = RESULTS_DIR / "all_results.json"
+    with open(summary_path, "w") as f:
+        json.dump(all_results, f, indent=2)
+    print(f"\nAll done. Combined: {summary_path}")
+
+    # Text summary
+    print("\n" + "=" * 120)
+    print(f"{'task':<30} {'llm':<14} {'n':<5} {'valid':<6} {'Epi_Uni':<10} {'Epi_BMA':<10} {'Epi_LOO':<10} {'L1':<7} {'t(s)':<7}")
+    print("-" * 120)
+    for r in all_results:
+        if r["success"]:
+            m = r["metrics"]
+            print(f"{r['task']:<30} {r['llm_name']:<14} {m['n_models_requested']:<5} "
+                  f"{m['n_models_valid_final']:<6} "
+                  f"{m['epistemic_var_uniform']:<10.4g} {m['epistemic_var_bma']:<10.4g} "
+                  f"{m['epistemic_var_loo']:<10.4g} {m['l1_distance_loo_bma']:<7.3f} "
+                  f"{m['elapsed_time_seconds']:<7.1f}")
+        else:
+            print(f"{r['task']:<30} {r['llm_name']:<14} {r['n_models']:<5} FAILED: {r['error']}")
+
+
+if __name__ == "__main__":
+    main()

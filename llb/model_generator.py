@@ -1,6 +1,59 @@
+import json
 import re
+from pathlib import Path
 
 from .examples import PAPER_CHAT_EXAMPLES
+
+
+def load_pregenerated_codes(codes_dir, n_models=None, field="canonical_code"):
+    """Load NumPyro code strings from a ``codes/`` directory produced by the
+    two-stage generation pipeline on the ``model_gen`` branch.
+
+    The per-file schema is JSON with keys ``sha``, ``raw_code``,
+    ``canonical_code``, ``raw_llm_response``, ``prompt_messages``,
+    ``first_seed``, ``first_slot``, ``generation_seconds``,
+    ``generation_diagnostics``.
+
+    Returns ``(codes, diagnostics)`` matching the shape of
+    ``generate_models_with_diagnostics`` so callers in :mod:`llb.core`
+    don't need a second branch.
+    """
+    codes_path = Path(codes_dir)
+    if not codes_path.is_dir():
+        raise FileNotFoundError(f"preloaded codes directory not found: {codes_path}")
+
+    code_files = sorted(codes_path.glob("code_*.code.json"))
+    if n_models is not None:
+        code_files = code_files[: int(n_models)]
+
+    codes = []
+    failures = []
+    for path in code_files:
+        try:
+            with path.open() as f:
+                record = json.load(f)
+        except Exception as exc:
+            failures.append((len(codes) + len(failures), f"load_error: {exc}"))
+            continue
+        code = record.get(field)
+        if not isinstance(code, str) or not code.strip():
+            failures.append(
+                (len(codes) + len(failures), f"missing_field: {field} in {path.name}")
+            )
+            continue
+        codes.append(code)
+
+    diagnostics = {
+        "requested_models": int(n_models) if n_models is not None else len(codes),
+        "generated_models": int(len(codes)),
+        "generation_failures": failures,
+        "invalid_generation_count": int(len(failures)),
+        "invalid_syntax_parsing_count": 0,
+        "generation_request_failures": 0,
+        "preloaded_from": str(codes_path),
+        "preloaded_field": field,
+    }
+    return codes, diagnostics
 
 
 def build_messages(text, data, targets):
