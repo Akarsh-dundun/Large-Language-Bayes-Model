@@ -44,6 +44,46 @@ They live on Unity scratch at
 See `experiments_progress.md` for the per-cell progress snapshot and
 file schemas.
 
+### Off-cluster: using the pre-generated codes zip
+
+Collaborators without access to Unity scratch can run the full
+`trial.py` pipeline from a downloadable archive of the codes. Ask
+Eddie for the Google Drive link to `paper_results_codes.zip`
+(≈230 MB, 41,806 programs across 5 populated cells:
+hurricane_eal_counties × {qwen25_coder, gemma4_e4b, llama32} and
+tornado_counts_plains × {qwen25_coder, gemma4_e4b}).
+
+```bash
+# 1. Download paper_results_codes.zip from the shared Drive link.
+# 2. Unpack anywhere — the archive preserves paper_results/<task>/<llm>/codes/.
+unzip paper_results_codes.zip -d ~/llb-codes
+
+# 3a. Point --paper-results-root at the unpacked tree (auto-preload picks
+#     up the right codes/ dir for each task+llm pair).
+python trial.py \
+  --task tasks/hurricane_eal_counties.json \
+  --llm-config llm_configs/qwen25_coder.json \
+  --n-models 100 \
+  --paper-results-root ~/llb-codes/paper_results
+
+# 3b. Or pass --preload-codes-dir explicitly for a single cell.
+python trial.py \
+  --task tasks/tornado_counts_plains.json \
+  --llm-config llm_configs/qwen25_coder.json \
+  --n-models 100 \
+  --preload-codes-dir ~/llb-codes/paper_results/tornado_counts_plains/qwen25_coder/codes
+
+# 3c. Sweep every populated cell from the archive.
+python trial.py --sweep-paper --n-models 100 \
+  --paper-results-root ~/llb-codes/paper_results
+```
+
+Equivalent to setting `LLB_PAPER_RESULTS_ROOT=~/llb-codes/paper_results`
+in your shell so you can omit `--paper-results-root` on every call.
+
+No Ollama / GPU required in this mode — inference is pure CPU NumPyro
+on pre-generated programs.
+
 ---
 
 ## CLI reference
