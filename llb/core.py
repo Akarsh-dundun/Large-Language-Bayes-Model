@@ -75,6 +75,14 @@ def _solve_stacking_optimization(loo_log_liks_matrix, verbose=False, lambda_reg=
         weights = exp_theta / np.sum(exp_theta)
         return weights
     
+
+    def _reverse_kl(ref, w, eps=1e-10):
+        ref = np.asarray(ref, dtype=np.float64)
+        w = np.asarray(w, dtype=np.float64)
+        mask = ref > 0
+        return np.sum(ref[mask] * (np.log(ref[mask]) - np.log(np.maximum(w[mask], eps))))
+
+    
     def objective(theta):
         """Objective in terms of unconstrained parameters θ.
         
@@ -98,8 +106,7 @@ def _solve_stacking_optimization(loo_log_liks_matrix, verbose=False, lambda_reg=
         else:
             # KL(ref || w) = Σ ref_k log(ref_k / w_k)
             #              = Σ ref_k log(ref_k) - Σ ref_k log(w_k)
-            kl_div = np.sum(ref_weights * (np.log(ref_weights) - np.log(w)))
-            reg_term = lambda_reg * kl_div
+            reg_term = lambda_reg * _reverse_kl(ref_weights, w)
         
         return -stacking_term + reg_term
     
@@ -127,7 +134,9 @@ def _solve_stacking_optimization(loo_log_liks_matrix, verbose=False, lambda_reg=
         # Reverse KL gradient
         if ref_weights is not None:
             # ∂/∂w_k KL(ref || w) = -ref_k / w_k
-            kl_grad_w = -ref_weights / w
+            kl_grad_w = np.zeros_like(w)
+            mask = ref_weights > 0
+            kl_grad_w[mask] = -ref_weights[mask] / np.maximum(w[mask], 1e-10)
             grad_w += lambda_reg * kl_grad_w
         
         # Chain rule: convert grad_w to grad_theta
@@ -152,7 +161,7 @@ def _solve_stacking_optimization(loo_log_liks_matrix, verbose=False, lambda_reg=
     console.print(f"Initial gradient (first 5): [yellow]{initial_grad[:5]}[/yellow]")
     
     if ref_weights is not None:
-        initial_kl = np.sum(ref_weights * (np.log(ref_weights) - np.log(w0)))
+        initial_kl = _reverse_kl(ref_weights, w0)
         console.print(f"Initial KL(ref||w): [cyan]{initial_kl:.6f}[/cyan]")
     
     if np.allclose(initial_grad, 0, atol=1e-8):
@@ -186,13 +195,13 @@ def _solve_stacking_optimization(loo_log_liks_matrix, verbose=False, lambda_reg=
     console.print(f"  Weight sum (should be 1.0): [cyan]{np.sum(weights):.10f}[/cyan]")
     
     if ref_weights is not None:
-        final_kl = np.sum(ref_weights * (np.log(ref_weights) - np.log(weights)))
+        final_kl = _reverse_kl(ref_weights, weights)
         console.print(f"  Final KL(ref||w): [cyan]{final_kl:.6f}[/cyan]")
         console.print(f"  KL reduction: [green]{initial_kl - final_kl:+.6f}[/green]")
         
         # Forward KL for comparison
-        forward_kl = np.sum(weights * (np.log(weights) - np.log(ref_weights)))
-        console.print(f"  [dim]For comparison, KL(w||ref): {forward_kl:.6f}[/dim]")
+        #forward_kl = np.sum(weights * (np.log(weights) - np.log(ref_weights)))
+        #console.print(f"  [dim]For comparison, KL(w||ref): {forward_kl:.6f}[/dim]")
     
     if np.allclose(weights, w0, atol=1e-6):
         console.print("\n[yellow]⚠️  WARNING: Weights did not change from initial uniform![/yellow]")
@@ -367,7 +376,7 @@ def infer(
                 except Exception as e:
                     if verbose:
                         console.print(f"[yellow]Model {idx}: Marginal likelihood failed ({e})[/yellow]")
-                    model_info["log_marginal_bound"] = -1e12
+                    model_info["log_marginal_bound"] = -np.inf
 
                 # Always compute LOO with diagnostics
                 try:
